@@ -1056,9 +1056,12 @@ installUnpackedPackage verbosity buildLimit installLimit
                  ,"--verbose=" ++ showForCabal verbosity]
         else die $ "Unable to find cabal executable at: " ++ self
 
+-- Generate a number to get a unique install location
 getUnique :: IO Int
 getUnique = randomRIO (1000000000,9999999999)
 
+-- Substitute the '$unique' path template variable within 'InstallDirs'
+-- within 'ConfigFlags'
 substituteUnique :: Int -> (Version -> ConfigFlags) -> (Version -> ConfigFlags)
 substituteUnique unique makeFlags version =
     updateInstallDirs u (makeFlags version) where
