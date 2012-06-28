@@ -121,7 +121,10 @@ import Distribution.Text
          ( display )
 import Distribution.Verbosity as Verbosity
          ( Verbosity, showForCabal, verbose, deafening )
-import Distribution.Simple.BuildPaths ( exeExtension )
+import Distribution.Simple.BuildPaths
+         ( exeExtension )
+import System.Random
+         ( randomRIO )
 
 --TODO:
 -- * assign flags to packages individually
@@ -973,7 +976,8 @@ installUnpackedPackage verbosity buildLimit installLimit
 
   -- Configure phase
   onFailure ConfigureFailed $ withJobLimit buildLimit $ do
-    setup configureCommand configureFlags
+    unique <- getUnique
+    setup configureCommand (substituteUnique unique configureFlags)
 
   -- Build phase
     onFailure BuildFailed $ do
@@ -1051,6 +1055,19 @@ installUnpackedPackage verbosity buildLimit installLimit
                  [self, "install", "--only"
                  ,"--verbose=" ++ showForCabal verbosity]
         else die $ "Unable to find cabal executable at: " ++ self
+
+getUnique :: IO Int
+getUnique = randomRIO (1000000000,9999999999)
+
+substituteUnique :: Int -> (Version -> ConfigFlags) -> (Version -> ConfigFlags)
+substituteUnique unique makeFlags version =
+    updateInstallDirs u (makeFlags version) where
+        u = fmap (fmap (InstallDirs.substPathTemplate
+                [(InstallDirs.UniqueVar, InstallDirs.PathTemplate
+                    [InstallDirs.Ordinary $ show unique])]))
+        updateInstallDirs f configFlags =
+            let x = f (configInstallDirs configFlags) in
+            configFlags { configInstallDirs = x}
 
 
 -- helper

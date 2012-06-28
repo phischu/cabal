@@ -58,7 +58,8 @@ module Distribution.Simple.InstallDirs (
         prefixRelativeInstallDirs,
         substituteInstallDirTemplates,
 
-        PathTemplate,
+        PathTemplate(..),
+        PathComponent(..),
         PathTemplateVariable(..),
         PathTemplateEnv,
         toPathTemplate,
@@ -392,6 +393,7 @@ data PathTemplateVariable =
      | TestSuiteNameVar   -- ^ The name of the test suite being run
      | TestSuiteResultVar -- ^ The result of the test suite being run, eg @pass@, @fail@, or @error@.
      | BenchmarkNameVar   -- ^ The name of the benchmark being run
+     | UniqueVar          -- ^ A for this package unique identifier
   deriving Eq
 
 type PathTemplateEnv = [(PathTemplateVariable, PathTemplate)]
@@ -487,6 +489,7 @@ instance Show PathTemplateVariable where
   show TestSuiteNameVar   = "test-suite"
   show TestSuiteResultVar = "result"
   show BenchmarkNameVar   = "benchmark"
+  show UniqueVar          = "unique"
 
 instance Read PathTemplateVariable where
   readsPrec _ s =
@@ -511,7 +514,8 @@ instance Read PathTemplateVariable where
                  ,("executablename", ExecutableNameVar)
                  ,("test-suite", TestSuiteNameVar)
                  ,("result", TestSuiteResultVar)
-                 ,("benchmark", BenchmarkNameVar)]
+                 ,("benchmark", BenchmarkNameVar)
+                 ,("unique", UniqueVar)]
 
 instance Show PathComponent where
   show (Ordinary path) = path
