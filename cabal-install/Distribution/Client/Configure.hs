@@ -20,7 +20,8 @@ import Distribution.Client.InstallPlan (InstallPlan)
 import Distribution.Client.IndexUtils as IndexUtils
          ( getSourcePackages, getInstalledPackages )
 import Distribution.Client.Setup
-         ( ConfigExFlags(..), configureCommand, filterConfigureFlags )
+         ( ConfigExFlags(..), configureCommand, filterConfigureFlags
+         , getUnique, substituteUnique, setInstalledPackageIdSuffix )
 import Distribution.Client.Types as Source
 import Distribution.Client.SetupWrapper
          ( setupWrapper, SetupScriptOptions(..), defaultSetupScriptOptions )
@@ -193,10 +194,13 @@ configurePackage :: Verbosity
                  -> [String]
                  -> IO ()
 configurePackage verbosity platform comp scriptOptions configFlags
-  (ConfiguredPackage (SourcePackage _ gpkg _) flags stanzas deps) extraArgs =
+  (ConfiguredPackage (SourcePackage _ gpkg _) flags stanzas deps) extraArgs = do
 
+  unique <- getUnique
+  let configureFlags' = (setInstalledPackageIdSuffix (show unique)
+            (substituteUnique unique configureFlags))
   setupWrapper verbosity
-    scriptOptions (Just pkg) configureCommand configureFlags extraArgs
+    scriptOptions (Just pkg) configureCommand configureFlags' extraArgs
 
   where
     configureFlags   = filterConfigureFlags configFlags {

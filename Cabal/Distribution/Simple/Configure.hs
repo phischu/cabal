@@ -555,7 +555,8 @@ configure (pkg_descr0, pbi) cfg
                     stripExes           = fromFlag $ configStripExes cfg,
                     withPackageDB       = packageDbs,
                     progPrefix          = fromFlag $ configProgPrefix cfg,
-                    progSuffix          = fromFlag $ configProgSuffix cfg
+                    progSuffix          = fromFlag $ configProgSuffix cfg,
+                    installedPackageIdSuffix = flagToMaybe $ configInstalledPackageIdSuffix cfg
                   }
 
         let dirs = absoluteInstallDirs pkg_descr lbi NoCopyDest

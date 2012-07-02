@@ -281,6 +281,8 @@ data ConfigFlags = ConfigFlags {
     configScratchDir    :: Flag FilePath,
     configExtraLibDirs  :: [FilePath],   -- ^ path to search for extra libraries
     configExtraIncludeDirs :: [FilePath],   -- ^ path to search for header files
+    configInstalledPackageIdSuffix :: Flag String, -- ^ string to be appended to
+                                                   -- InstalledPackageId
 
     configDistPref :: Flag FilePath, -- ^"dist" prefix
     configVerbosity :: Flag Verbosity, -- ^verbosity level
@@ -318,7 +320,8 @@ defaultConfigFlags progConf = emptyConfigFlags {
     configStripExes    = Flag True,
     configTests  = Flag False,
     configBenchmarks   = Flag False,
-    configLibCoverage = Flag False
+    configLibCoverage = Flag False,
+    configInstalledPackageIdSuffix = Flag ""
   }
 
 configureCommand :: ProgramConfiguration -> CommandUI ConfigFlags
@@ -482,6 +485,10 @@ configureOptions showOrParseArgs =
          "dependency checking and compilation for benchmarks listed in the package description file."
          configBenchmarks (\v flags -> flags { configBenchmarks = v })
          (boolOpt [] [])
+      ,option "" ["installedPackageIdSuffix"]
+         "string to be appended to the InstalledPackageId"
+         configInstalledPackageIdSuffix (\s flags -> flags { configInstalledPackageIdSuffix = s })
+         (reqArg' "SUFFIX" (\x -> toFlag x) flagToList)
       ]
   where
     readFlagList :: String -> FlagAssignment
@@ -606,7 +613,8 @@ instance Monoid ConfigFlags where
     configConfigurationsFlags = mempty,
     configTests   = mempty,
     configLibCoverage = mempty,
-    configBenchmarks    = mempty
+    configBenchmarks    = mempty,
+    configInstalledPackageIdSuffix = mempty
   }
   mappend a b =  ConfigFlags {
     configPrograms      = configPrograms b,
@@ -639,7 +647,8 @@ instance Monoid ConfigFlags where
     configConfigurationsFlags = combine configConfigurationsFlags,
     configTests = combine configTests,
     configLibCoverage = combine configLibCoverage,
-    configBenchmarks    = combine configBenchmarks
+    configBenchmarks    = combine configBenchmarks,
+    configInstalledPackageIdSuffix = combine configInstalledPackageIdSuffix
   }
     where combine field = field a `mappend` field b
 

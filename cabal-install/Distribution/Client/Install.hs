@@ -60,7 +60,9 @@ import Distribution.Client.InstallPlan (InstallPlan)
 import Distribution.Client.Setup
          ( GlobalFlags(..)
          , ConfigFlags(..), configureCommand, filterConfigureFlags
-         , ConfigExFlags(..), InstallFlags(..) )
+         , ConfigExFlags(..), InstallFlags(..)
+         ,getUnique, substituteUnique
+         ,setInstalledPackageIdSuffix )
 import Distribution.Client.Config
          ( defaultCabalDir )
 import Distribution.Client.Tar (extractTarGzFile)
@@ -123,8 +125,6 @@ import Distribution.Verbosity as Verbosity
          ( Verbosity, showForCabal, verbose, deafening )
 import Distribution.Simple.BuildPaths
          ( exeExtension )
-import System.Random
-         ( randomRIO )
 
 --TODO:
 -- * assign flags to packages individually
@@ -977,7 +977,10 @@ installUnpackedPackage verbosity buildLimit installLimit
   -- Configure phase
   onFailure ConfigureFailed $ withJobLimit buildLimit $ do
     unique <- getUnique
-    setup configureCommand (substituteUnique unique configureFlags)
+    setup configureCommand
+        (setInstalledPackageIdSuffix (show unique)
+            (substituteUnique unique
+                configureFlags))
 
   -- Build phase
     onFailure BuildFailed $ do
@@ -1055,22 +1058,6 @@ installUnpackedPackage verbosity buildLimit installLimit
                  [self, "install", "--only"
                  ,"--verbose=" ++ showForCabal verbosity]
         else die $ "Unable to find cabal executable at: " ++ self
-
--- Generate a number to get a unique install location
-getUnique :: IO Int
-getUnique = randomRIO (1000000000,9999999999)
-
--- Substitute the '$unique' path template variable within 'InstallDirs'
--- within 'ConfigFlags'
-substituteUnique :: Int -> (Version -> ConfigFlags) -> (Version -> ConfigFlags)
-substituteUnique unique makeFlags version =
-    updateInstallDirs u (makeFlags version) where
-        u = fmap (fmap (InstallDirs.substPathTemplate
-                [(InstallDirs.UniqueVar, InstallDirs.PathTemplate
-                    [InstallDirs.Ordinary $ show unique])]))
-        updateInstallDirs f configFlags =
-            let x = f (configInstallDirs configFlags) in
-            configFlags { configInstallDirs = x}
 
 
 -- helper

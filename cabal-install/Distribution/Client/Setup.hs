@@ -13,6 +13,7 @@
 module Distribution.Client.Setup
     ( globalCommand, GlobalFlags(..), globalRepos
     , configureCommand, ConfigFlags(..), filterConfigureFlags
+    , getUnique, substituteUnique, setInstalledPackageIdSuffix
     , configureExCommand, ConfigExFlags(..), defaultConfigExFlags
                         , configureExOptions
     , installCommand, InstallFlags(..), installOptions, defaultInstallFlags
@@ -55,6 +56,7 @@ import Distribution.Simple.Setup
 import Distribution.Simple.Setup
          ( Flag(..), toFlag, fromFlag, flagToMaybe, flagToList
          , optionVerbosity, boolOpt, trueArg, falseArg )
+import qualified Distribution.Simple.InstallDirs as InstallDirs
 import Distribution.Simple.InstallDirs
          ( PathTemplate, toPathTemplate, fromPathTemplate )
 import Distribution.Version
@@ -86,6 +88,8 @@ import System.FilePath
          ( (</>) )
 import Network.URI
          ( parseAbsoluteURI, uriToString )
+import System.Random
+         ( randomRIO )
 
 -- ------------------------------------------------------------
 -- * Global flags
@@ -227,6 +231,29 @@ filterConfigureFlags flags cabalLibVersion
   | cabalLibVersion >= Version [1,3,10] [] = flags
     -- older Cabal does not grok the constraints flag:
   | otherwise = flags { configConstraints = [] }
+
+-- Generate a number to get a unique install location
+getUnique :: IO Int
+getUnique = randomRIO (1000000000,9999999999)
+
+-- Substitute the '$unique' path template variable within 'InstallDirs'
+-- within 'ConfigFlags'
+substituteUnique :: Int -> (Version -> ConfigFlags) -> (Version -> ConfigFlags)
+substituteUnique unique makeFlags version =
+    updateInstallDirs u (makeFlags version) where
+        u = fmap (fmap (InstallDirs.substPathTemplate
+                [(InstallDirs.UniqueVar, InstallDirs.PathTemplate
+                    [InstallDirs.Ordinary $ show unique])]))
+        updateInstallDirs f configFlags =
+            let x = f (configInstallDirs configFlags) in
+            configFlags { configInstallDirs = x}
+
+-- Set the InstalledPackageIdSuffix to the specified String
+setInstalledPackageIdSuffix :: String ->
+                               (Version -> ConfigFlags) ->
+                               (Version -> ConfigFlags)
+setInstalledPackageIdSuffix s makeFlags version =
+    (makeFlags version) { configInstalledPackageIdSuffix = toFlag s}
 
 -- ------------------------------------------------------------
 -- * Config extra flags

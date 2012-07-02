@@ -187,13 +187,17 @@ generateRegistrationInfo verbosity pkg lib lbi clbi inplace distPref = do
   --TODO: the method of setting the InstalledPackageId is compiler specific
   --      this aspect should be delegated to a per-compiler helper.
   let comp = compiler lbi
+      suffix = maybe "" ("-"++) (installedPackageIdSuffix lbi)
   ipid <-
     case compilerFlavor comp of
      GHC | compilerVersion comp >= Version [6,11] [] -> do
             s <- GHC.libAbiHash verbosity pkg lbi lib clbi
-            return (InstalledPackageId (display (packageId pkg) ++ '-':s))
+            let abihash = '-':filter (/='\n') s
+            return (InstalledPackageId
+                (display (packageId pkg) ++ abihash ++ suffix))
      _other -> do
-            return (InstalledPackageId (display (packageId pkg)))
+            return (InstalledPackageId
+                (display (packageId pkg)))
 
   let installedPkgInfo
         | inplace   = inplaceInstalledPackageInfo pwd distPref

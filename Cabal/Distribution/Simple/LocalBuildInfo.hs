@@ -139,7 +139,8 @@ data LocalBuildInfo = LocalBuildInfo {
         splitObjs     :: Bool,  -- ^Use -split-objs with GHC, if available
         stripExes     :: Bool,  -- ^Whether to strip executables during install
         progPrefix    :: PathTemplate, -- ^Prefix to be prepended to installed executables
-        progSuffix    :: PathTemplate -- ^Suffix to be appended to installed executables
+        progSuffix    :: PathTemplate, -- ^Suffix to be appended to installed executables
+        installedPackageIdSuffix :: Maybe String -- ^Suffix to be appended to the InstalledPackageId
   } deriving (Read, Show)
 
 -- | External package dependencies for the package as a whole. This is the
