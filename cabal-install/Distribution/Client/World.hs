@@ -52,6 +52,8 @@ import Data.Maybe
          ( isJust, fromJust )
 import System.IO.Error
          ( isDoesNotExistError )
+import Control.Exception
+         ( catch )
 import qualified Data.ByteString.Lazy.Char8 as B
 import Prelude hiding (getContents)
 

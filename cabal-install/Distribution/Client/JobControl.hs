@@ -25,7 +25,6 @@ module Distribution.Client.JobControl (
 import Control.Monad
 import Control.Concurrent
 import Control.Exception
-import Prelude hiding (catch)
 
 
 data JobControl m a = JobControl {

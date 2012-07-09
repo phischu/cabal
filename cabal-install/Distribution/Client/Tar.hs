@@ -87,8 +87,8 @@ import Distribution.Compat.FilePerms
          ( setFileExecutable )
 import System.Posix.Types
          ( FileMode )
-import System.Time
-         ( ClockTime(..) )
+import Data.Time.Clock.POSIX
+         ( utcTimeToPOSIXSeconds )
 import System.IO
          ( IOMode(ReadMode), openBinaryFile, hFileSize )
 import System.IO.Unsafe (unsafeInterleaveIO)
@@ -899,5 +899,5 @@ recurseDirectories base (dir:dirs) = unsafeInterleaveIO $ do
 
 getModTime :: FilePath -> IO EpochTime
 getModTime path = do
-  (TOD s _) <- getModificationTime path
-  return $! fromIntegral s
+  t <- getModificationTime path
+  return $! truncate (utcTimeToPOSIXSeconds t)
