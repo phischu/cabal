@@ -121,7 +121,8 @@ data InstalledPackageInfo_ m
         frameworkDirs     :: [FilePath],
         frameworks        :: [String],
         haddockInterfaces :: [FilePath],
-        haddockHTMLs      :: [FilePath]
+        haddockHTMLs      :: [FilePath],
+        timeStamp         :: Integer
     }
     deriving (Read, Show)
 
@@ -163,11 +164,13 @@ emptyInstalledPackageInfo
         frameworkDirs     = [],
         frameworks        = [],
         haddockInterfaces = [],
-        haddockHTMLs      = []
+        haddockHTMLs      = [],
+        timeStamp         = 0
     }
 
 noVersion :: Version
 noVersion = Version{ versionBranch=[], versionTags=[] }
+
 
 -- -----------------------------------------------------------------------------
 -- Parsing
@@ -291,4 +294,7 @@ installedFieldDescrs = [
  , listField   "haddock-html"
         showFilePath       parseFilePathQ
         haddockHTMLs       (\xs pkg -> pkg{haddockHTMLs=xs})
+ , simpleField "time-stamp"
+        disp               parse
+        timeStamp          (\t  pkg -> pkg{timeStamp=t})
  ]

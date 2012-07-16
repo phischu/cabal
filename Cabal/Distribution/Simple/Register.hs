@@ -108,6 +108,8 @@ import Distribution.Compat.Exception
 import System.FilePath ((</>), (<.>), isAbsolute)
 import System.Directory
          ( getCurrentDirectory, removeDirectoryRecursive )
+import System.Time
+         ( getClockTime, ClockTime(TOD) )
 
 import Data.Maybe
          ( isJust, fromMaybe, maybeToList )
@@ -199,11 +201,13 @@ generateRegistrationInfo verbosity pkg lib lbi clbi inplace distPref = do
             return (InstalledPackageId
                 (display (packageId pkg)))
 
+  TOD timestamp _ <- getClockTime
+
   let installedPkgInfo
         | inplace   = inplaceInstalledPackageInfo pwd distPref
-                        pkg lib lbi clbi
+                        pkg lib lbi clbi timestamp
         | otherwise = absoluteInstalledPackageInfo
-                        pkg lib lbi clbi
+                        pkg lib lbi clbi timestamp
 
   return installedPkgInfo{ IPI.installedPackageId = ipid }
 
@@ -263,8 +267,9 @@ generalInstalledPackageInfo
   -> Library
   -> ComponentLocalBuildInfo
   -> InstallDirs FilePath
+  -> Integer
   -> InstalledPackageInfo
-generalInstalledPackageInfo adjustRelIncDirs pkg lib clbi installDirs =
+generalInstalledPackageInfo adjustRelIncDirs pkg lib clbi installDirs timestamp =
   InstalledPackageInfo {
     --TODO: do not open-code this conversion from PackageId to InstalledPackageId
     IPI.installedPackageId = InstalledPackageId (display (packageId pkg)),
@@ -301,7 +306,8 @@ generalInstalledPackageInfo adjustRelIncDirs pkg lib clbi installDirs =
     IPI.frameworkDirs      = [],
     IPI.frameworks         = frameworks bi,
     IPI.haddockInterfaces  = [haddockdir installDirs </> haddockName pkg],
-    IPI.haddockHTMLs       = [htmldir installDirs]
+    IPI.haddockHTMLs       = [htmldir installDirs],
+    IPI.timeStamp          = timestamp
   }
   where
     bi = libBuildInfo lib
@@ -322,10 +328,11 @@ inplaceInstalledPackageInfo :: FilePath -- ^ top of the build tree
                             -> Library
                             -> LocalBuildInfo
                             -> ComponentLocalBuildInfo
+                            -> Integer
                             -> InstalledPackageInfo
-inplaceInstalledPackageInfo inplaceDir distPref pkg lib lbi clbi =
+inplaceInstalledPackageInfo inplaceDir distPref pkg lib lbi clbi timestamp =
     generalInstalledPackageInfo adjustRelativeIncludeDirs pkg lib clbi
-    installDirs
+    installDirs timestamp
   where
     adjustRelativeIncludeDirs = map (inplaceDir </>)
     installDirs =
@@ -350,9 +357,11 @@ absoluteInstalledPackageInfo :: PackageDescription
                              -> Library
                              -> LocalBuildInfo
                              -> ComponentLocalBuildInfo
+                             -> Integer
                              -> InstalledPackageInfo
-absoluteInstalledPackageInfo pkg lib lbi clbi =
-    generalInstalledPackageInfo adjustReativeIncludeDirs pkg lib clbi installDirs
+absoluteInstalledPackageInfo pkg lib lbi clbi timestamp =
+    generalInstalledPackageInfo adjustReativeIncludeDirs pkg lib clbi
+                                installDirs timestamp
   where
     -- For installed packages we install all include files into one dir,
     -- whereas in the build tree they may live in multiple local dirs.

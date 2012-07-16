@@ -66,3 +66,8 @@ instance Text Version where
           then return 0
           else do rest <- Parse.munch Char.isDigit
                   return (read (first : rest))
+
+instance Text Integer where
+  disp  = Disp.text . show
+  parse = Parse.munch1 Char.isDigit >>= return . read
+

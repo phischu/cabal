@@ -108,6 +108,8 @@ import System.FilePath
          ( (</>), (<.>) )
 import System.Directory
          ( getCurrentDirectory )
+import System.Time
+         ( getClockTime, ClockTime(TOD) )
 
 -- -----------------------------------------------------------------------------
 -- |Build the libraries and executables in this package.
@@ -152,8 +154,9 @@ buildComponent verbosity pkg_descr lbi suffixes
     -- Register the library in-place, so exes can depend
     -- on internally defined libraries.
     pwd <- getCurrentDirectory
+    TOD timestamp _ <- getClockTime
     let installedPkgInfo =
-          (inplaceInstalledPackageInfo pwd distPref pkg_descr lib lbi clbi) {
+          (inplaceInstalledPackageInfo pwd distPref pkg_descr lib lbi clbi timestamp) {
             -- The inplace registration uses the "-inplace" suffix,
             -- not an ABI hash.
             IPI.installedPackageId = inplacePackageId (packageId installedPkgInfo)
@@ -190,6 +193,7 @@ buildComponent verbosity pkg_descr lbi suffixes
                  test@TestSuite { testInterface = TestSuiteLibV09 _ m })
                clbi distPref = do
     pwd <- getCurrentDirectory
+    TOD timestamp _ <- getClockTime
     let bi  = testBuildInfo test
         lib = Library {
                 exposedModules = [ m ],
@@ -205,7 +209,7 @@ buildComponent verbosity pkg_descr lbi suffixes
               , testSuites   = []
               , library      = Just lib
               }
-        ipi = (inplaceInstalledPackageInfo pwd distPref pkg lib lbi clbi) {
+        ipi = (inplaceInstalledPackageInfo pwd distPref pkg lib lbi clbi timestamp) {
                 IPI.installedPackageId = inplacePackageId $ packageId ipi
               }
         testDir = buildDir lbi </> stubName test
