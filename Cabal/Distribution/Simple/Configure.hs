@@ -128,7 +128,7 @@ import qualified Distribution.Simple.UHC  as UHC
 import Control.Monad
     ( when, unless, foldM, filterM, forM )
 import Data.List
-    ( nub, partition, isPrefixOf, inits, find )
+    ( nub, partition, isPrefixOf, inits, find, sortBy )
 import Data.Maybe
     ( isNothing, catMaybes, mapMaybe )
 import Data.Monoid
@@ -149,7 +149,10 @@ import Distribution.Text
     ( Text(disp), display, simpleParse )
 import Text.PrettyPrint
     ( comma, punctuate, render, nest, sep )
-import Distribution.Compat.Exception ( catchExit, catchIO )
+import Distribution.Compat.Exception
+    ( catchExit, catchIO )
+import Data.Ord
+    ( comparing )
 
 tryGetConfigStateFile :: (Read a) => FilePath -> IO (Either String a)
 tryGetConfigStateFile filename = do
@@ -650,9 +653,28 @@ selectDependency internalIndex installedIndex
     _      -> case PackageIndex.lookupDependency installedIndex dep of
       []   -> Left  $ DependencyNotExists pkgname
       pkgs -> Right $ ExternalDependency dep $
-                -- by default we just pick the latest
                 case last pkgs of
-                  (_ver, instances) -> head instances -- the first preference
+                  (_ver, instances) -> head (sortByPriority instances)
+
+-- FIXME: Exact duplicate in GHC's Packages module
+-- Packages are sorted by descending priority defined below
+sortByPriority :: [InstalledPackageInfo_ m] -> [InstalledPackageInfo_ m]
+sortByPriority = sortBy (flip priority)
+
+-- higher priority is given to packages with higher version and if 
+-- versions are equal then to ones with bigger timestamp and if
+-- timestamps are equal ...
+priority :: InstalledPackageInfo_ m -> InstalledPackageInfo_ m -> Ordering
+priority ipi1 ipi2 = case priorityByVersion ipi1 ipi2 of
+                         EQ -> priorityByTimestamp ipi1 ipi2
+                         o  -> o
+
+priorityByVersion :: InstalledPackageInfo_ m -> InstalledPackageInfo_ m -> Ordering
+priorityByVersion = comparing (pkgVersion.sourcePackageId)
+
+priorityByTimestamp :: InstalledPackageInfo_ m -> InstalledPackageInfo_ m -> Ordering
+priorityByTimestamp = comparing timeStamp
+--
 
 reportSelectedDependencies :: Verbosity
                            -> [ResolvedDependency] -> IO ()
