@@ -93,7 +93,7 @@ import Distribution.Text
          ( Text(..), display )
 import qualified Distribution.Compat.ReadP as Parse
 import qualified Text.PrettyPrint as Disp
-import Distribution.Package ( Dependency(..) )
+import Distribution.Package ( Dependency(..), InstalledPackageId )
 import Distribution.PackageDescription
          ( FlagName(..), FlagAssignment )
 import Distribution.Simple.Command hiding (boolOpt, boolOpt')
@@ -293,6 +293,8 @@ data ConfigFlags = ConfigFlags {
     configStripExes :: Flag Bool,      -- ^Enable executable stripping
     configConstraints :: [Dependency], -- ^Additional constraints for
                                        -- dependencies
+    configDependencies :: [InstalledPackageId], -- ^Required dependencies
+
     configConfigurationsFlags :: FlagAssignment,
     configTests :: Flag Bool,     -- ^Enable test suite compilation
     configBenchmarks :: Flag Bool,     -- ^Enable benchmark compilation
@@ -473,6 +475,12 @@ configureOptions showOrParseArgs =
          (reqArg "DEPENDENCY"
                  (readP_to_E (const "dependency expected") ((\x -> [x]) `fmap` parse))
                  (map (\x -> display x)))
+      ,option "" ["dependency"]
+         "A list of installed packages to depend upon."
+         configDependencies (\v flags -> flags { configDependencies = v})
+         (reqArg "INSTALLEDPACKAGEID"
+                 (readP_to_E (const "InstalledPackageId expected") ((\x -> [x]) `fmap` parse))
+                 (map (\x -> display x)))
       ,option "" ["tests"]
          "dependency checking and compilation for test suites listed in the package description file."
          configTests (\v flags -> flags { configTests = v })
@@ -609,6 +617,7 @@ instance Monoid ConfigFlags where
     configStripExes     = mempty,
     configExtraLibDirs  = mempty,
     configConstraints   = mempty,
+    configDependencies  = mempty,
     configExtraIncludeDirs    = mempty,
     configConfigurationsFlags = mempty,
     configTests   = mempty,
@@ -643,6 +652,7 @@ instance Monoid ConfigFlags where
     configStripExes     = combine configStripExes,
     configExtraLibDirs  = combine configExtraLibDirs,
     configConstraints   = combine configConstraints,
+    configDependencies  = combine configDependencies,
     configExtraIncludeDirs    = combine configExtraIncludeDirs,
     configConfigurationsFlags = combine configConfigurationsFlags,
     configTests = combine configTests,

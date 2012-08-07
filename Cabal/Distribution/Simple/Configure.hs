@@ -153,6 +153,8 @@ import Distribution.Compat.Exception
     ( catchExit, catchIO )
 import Data.Ord
     ( comparing )
+import Data.Either
+    ( lefts, rights )
 
 tryGetConfigStateFile :: (Read a) => FilePath -> IO (Either String a)
 tryGetConfigStateFile filename = do
@@ -363,7 +365,39 @@ configure (pkg_descr0, pbi) cfg
         checkPackageProblems verbosity pkg_descr0
           (updatePackageDescription pbi pkg_descr)
 
-        let selectDependencies =
+        -- we first select the package instances that are specified
+        -- on the command line via -installed-package-id
+        -- we then resolve the remaining not yet satisfied constraints
+        -- packages with higher version have primary priority
+        -- packages that were installed later have secondary priority
+
+        let maybeDependencies    = map
+                (PackageIndex.lookupInstalledPackageId installedPackageSet)
+                (configDependencies cfg)
+            selectedDependencies = catMaybes maybeDependencies
+            failedDependencies   = [ ipid |
+                (ipid,Nothing) <- zip (configDependencies cfg) maybeDependencies ]
+
+            alreadySatisfied :: Dependency -> Bool
+            alreadySatisfied (Dependency name versionRange) = or [
+                name == packageName selectedPackage &&
+                withinRange (packageVersion selectedPackage) versionRange |
+                selectedPackage <- selectedDependencies ]
+            remainingConstraints = filter (not . alreadySatisfied) (buildDepends pkg_descr)
+
+            perhapsResolvedConstraints = map (selectDependency internalPackageSet installedPackageSet) remainingConstraints
+            failedConstraints = lefts perhapsResolvedConstraints
+            resolvedPackages = rights perhapsResolvedConstraints
+
+            resolvedInternalPackages = [ pkgid  | InternalDependency _ pkgid <- resolvedPackages]
+            resolvedExternalPackages = [ pkg    | ExternalDependency _ pkg   <- resolvedPackages]
+
+            internalPkgDeps = resolvedInternalPackages
+            externalPkgDeps = resolvedExternalPackages ++ selectedDependencies 
+
+{-
+
+selectDependencies =
                 (\xs -> ([ x | Left x <- xs ], [ x | Right x <- xs ]))
               . map (selectDependency internalPackageSet installedPackageSet)
 
@@ -371,7 +405,7 @@ configure (pkg_descr0, pbi) cfg
 
             internalPkgDeps = [ pkgid | InternalDependency _ pkgid <- allPkgDeps ]
             externalPkgDeps = [ pkg   | ExternalDependency _ pkg   <- allPkgDeps ]
-
+-}
         when (not (null internalPkgDeps) && not (newPackageDepsBehaviour pkg_descr)) $
             die $ "The field 'build-depends: "
                ++ intercalate ", " (map (display . packageName) internalPkgDeps)
@@ -379,8 +413,10 @@ configure (pkg_descr0, pbi) cfg
                ++ "package. To use this feature the package must specify at "
                ++ "least 'cabal-version: >= 1.8'."
 
-        reportFailedDependencies failedDeps
-        reportSelectedDependencies verbosity allPkgDeps
+        reportFailedDependencies
+            (map Left failedDependencies ++ map Right failedConstraints)
+        reportSelectedDependencies verbosity
+            (map Left selectedDependencies ++ map Right resolvedPackages)
 
         packageDependsIndex <-
           case PackageIndex.dependencyClosure installedPackageSet
@@ -466,7 +502,7 @@ configure (pkg_descr0, pbi) cfg
                                           "--enable-split-objs; ignoring")
                                     return False
 
-        -- The allPkgDeps contains all the package deps for the whole package
+        -- The externalPkgDeps contains all the package deps for the whole package
         -- but we need to select the subset for this specific component.
         -- we just take the subset for the package names this component
         -- needs. Note, this only works because we cannot yet depend on two
@@ -677,29 +713,36 @@ priorityByTimestamp = comparing timeStamp
 --
 
 reportSelectedDependencies :: Verbosity
-                           -> [ResolvedDependency] -> IO ()
+                           -> [Either InstalledPackageInfo ResolvedDependency]
+                           -> IO ()
 reportSelectedDependencies verbosity deps =
-  info verbosity $ unlines
-    [ "Dependency " ++ display (simplifyDependency dep)
-                    ++ ": using " ++ display pkgid
-    | resolved <- deps
-    , let (dep, pkgid) = case resolved of
-            ExternalDependency dep' pkg'   -> (dep', packageId pkg')
-            InternalDependency dep' pkgid' -> (dep', pkgid') ]
+    info verbosity $ unlines $ map reportSelectedDependency deps where
+        reportSelectedDependency (Right (ExternalDependency dep pkg)) =
+            "Dependency " ++ display (simplifyDependency dep) ++
+            ": using " ++ display (packageId pkg)
+        reportSelectedDependency (Right (InternalDependency dep pkgid)) =
+            "Dependency " ++ display (simplifyDependency dep) ++
+            ": using " ++ display pkgid
+        reportSelectedDependency (Left installedPackageInfo) =
+            "Required " ++ display (installedPackageId installedPackageInfo) ++
+            ": satisfied"
 
-reportFailedDependencies :: [FailedDependency] -> IO ()
+reportFailedDependencies :: [Either InstalledPackageId FailedDependency] -> IO ()
 reportFailedDependencies []     = return ()
 reportFailedDependencies failed =
     die (intercalate "\n\n" (map reportFailedDependency failed))
 
   where
-    reportFailedDependency (DependencyNotExists pkgname) =
+    reportFailedDependency (Right (DependencyNotExists pkgname)) =
          "there is no version of " ++ display pkgname ++ " installed.\n"
       ++ "Perhaps you need to download and install it from\n"
       ++ hackageUrl ++ display pkgname ++ "?"
 
-    reportFailedDependency (DependencyNoVersion dep) =
+    reportFailedDependency (Right (DependencyNoVersion dep)) =
         "cannot satisfy dependency " ++ display (simplifyDependency dep) ++ "\n"
+
+    reportFailedDependency (Left failedDependency) =
+        "cannot find InstalledPackageId " ++ display failedDependency ++ "\n"
 
 getInstalledPackages :: Verbosity -> Compiler
                      -> PackageDBStack -> ProgramConfiguration
