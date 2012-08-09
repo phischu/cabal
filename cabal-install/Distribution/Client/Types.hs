@@ -14,7 +14,8 @@
 module Distribution.Client.Types where
 
 import Distribution.Package
-         ( PackageName, PackageId, Package(..), PackageFixedDeps(..) )
+         ( PackageName, PackageId, Package(..), PackageFixedDeps(..),
+           InstalledPackageId )
 import Distribution.InstalledPackageInfo
          ( InstalledPackageInfo )
 import Distribution.PackageDescription
@@ -78,17 +79,16 @@ data ConfiguredPackage = ConfiguredPackage
        SourcePackage       -- package info, including repo
        FlagAssignment      -- complete flag assignment for the package
        [OptionalStanza]    -- list of enabled optional stanzas for the package
-       [PackageId]         -- set of exact dependencies. These must be
-                           -- consistent with the 'buildDepends' in the
-                           -- 'PackageDescription' that you'd get by applying
-                           -- the flag assignment and optional stanzas.
+       [PackageId]         -- set of all package versions this package depends on
+       [InstalledPackageId]-- subset of those packages already installed
+
   deriving Show
 
 instance Package ConfiguredPackage where
-  packageId (ConfiguredPackage pkg _ _ _) = packageId pkg
+  packageId (ConfiguredPackage pkg _ _ _ _) = packageId pkg
 
 instance PackageFixedDeps ConfiguredPackage where
-  depends (ConfiguredPackage _ _ _ deps) = deps
+  depends (ConfiguredPackage _ _ _ deps _) = deps
 
 
 -- | A package description along with the location of the package sources.

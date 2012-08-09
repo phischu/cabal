@@ -494,10 +494,11 @@ showPackageProblem (InvalidDep dep pkgid) =
   ++ " but the configuration specifies " ++ display pkgid
   ++ " which does not satisfy the dependency."
 
+-- TODO: do some checks for consistency with the installed dependencies
 configuredPackageProblems :: Platform -> CompilerId
                           -> ConfiguredPackage -> [PackageProblem]
 configuredPackageProblems platform comp
-  (ConfiguredPackage pkg specifiedFlags stanzas specifiedDeps) =
+  (ConfiguredPackage pkg specifiedFlags stanzas specifiedDeps _) =
      [ DuplicateFlag flag | ((flag,_):_) <- duplicates specifiedFlags ]
   ++ [ MissingFlag flag | OnlyInLeft  flag <- mergedFlags ]
   ++ [ ExtraFlag   flag | OnlyInRight flag <- mergedFlags ]

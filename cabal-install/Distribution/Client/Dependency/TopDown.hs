@@ -555,7 +555,7 @@ finaliseSelectedPackages pref selected constraints =
 
     finaliseInstalled (InstalledPackageEx pkg _ _) = InstallPlan.PreExisting pkg
     finaliseSource mipkg (SemiConfiguredPackage pkg flags stanzas deps) =
-      InstallPlan.Configured (ConfiguredPackage pkg flags stanzas deps')
+      InstallPlan.Configured (ConfiguredPackage pkg flags stanzas deps' [])
       where
         deps' = map (packageId . pickRemaining mipkg) deps
 

@@ -133,7 +133,7 @@ symlinkBinaries configFlags installFlags plan =
       , PackageDescription.buildable (PackageDescription.buildInfo exe) ]
 
     pkgDescription :: ConfiguredPackage -> PackageDescription
-    pkgDescription (ConfiguredPackage (SourcePackage _ pkg _) flags stanzas _) =
+    pkgDescription (ConfiguredPackage (SourcePackage _ pkg _) flags stanzas _ _) =
       case finalizePackageDescription flags
              (const True)
              platform compilerId [] (enableStanzas stanzas pkg) of

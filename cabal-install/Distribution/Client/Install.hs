@@ -502,14 +502,14 @@ printPlan dryRun verbosity plan = case plan of
     toFlagAssignment = map (\ f -> (flagName f, flagDefault f))
 
     nonDefaultFlags :: ConfiguredPackage -> FlagAssignment
-    nonDefaultFlags (ConfiguredPackage spkg fa _ _) =
+    nonDefaultFlags (ConfiguredPackage spkg fa _ _ _) =
       let defaultAssignment =
             toFlagAssignment
              (genPackageFlags (Source.packageDescription spkg))
       in  fa \\ defaultAssignment
 
     stanzas :: ConfiguredPackage -> [OptionalStanza]
-    stanzas (ConfiguredPackage _ _ sts _) = sts
+    stanzas (ConfiguredPackage _ _ sts _ _) = sts
 
     showStanzas :: [OptionalStanza] -> String
     showStanzas = concatMap ((' ' :) . showStanza)
@@ -875,10 +875,11 @@ installConfiguredPackage :: Platform -> CompilerId
                                          -> PackageDescription -> a)
                          -> a
 installConfiguredPackage platform comp configFlags
-  (ConfiguredPackage (SourcePackage _ gpkg source) flags stanzas deps)
+  (ConfiguredPackage (SourcePackage _ gpkg source) flags stanzas deps installedDeps)
   installPkg = installPkg configFlags {
     configConfigurationsFlags = flags,
     configConstraints = map thisPackageVersion deps,
+    configDependencies = installedDeps,
     configBenchmarks = toFlag False,
     configTests = toFlag (TestStanzas `elem` stanzas)
   } source pkg

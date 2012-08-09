@@ -83,7 +83,7 @@ configure verbosity packageDBs repos comp conf
         configureCommand (const configFlags) extraArgs
 
     Right installPlan -> case InstallPlan.ready installPlan of
-      [pkg@(ConfiguredPackage (SourcePackage _ _ (LocalUnpackedPackage _)) _ _ _)] ->
+      [pkg@(ConfiguredPackage (SourcePackage _ _ (LocalUnpackedPackage _)) _ _ _ _)] ->
         configurePackage verbosity
           (InstallPlan.planPlatform installPlan)
           (InstallPlan.planCompiler installPlan)
@@ -194,7 +194,8 @@ configurePackage :: Verbosity
                  -> [String]
                  -> IO ()
 configurePackage verbosity platform comp scriptOptions configFlags
-  (ConfiguredPackage (SourcePackage _ gpkg _) flags stanzas deps) extraArgs = do
+  (ConfiguredPackage (SourcePackage _ gpkg _) flags stanzas deps installedDeps)
+  extraArgs = do
 
   unique <- getUnique
   let configureFlags' = (setInstalledPackageIdSuffix (show unique)
@@ -206,6 +207,7 @@ configurePackage verbosity platform comp scriptOptions configFlags
     configureFlags   = filterConfigureFlags configFlags {
       configConfigurationsFlags = flags,
       configConstraints         = map thisPackageVersion deps,
+      configDependencies        = installedDeps,
       configVerbosity           = toFlag verbosity,
       configBenchmarks          = toFlag (BenchStanzas `elem` stanzas),
       configTests               = toFlag (TestStanzas `elem` stanzas)

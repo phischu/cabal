@@ -31,6 +31,7 @@ convCP iidx sidx (CP qpi fa es ds) =
                   fa
                   es
                   (map convPI' ds)
+                  (catMaybes (map convPI'' ds))
 
 convPI :: PI QPN -> Either InstalledPackageId PackageId
 convPI (PI _ (I _ (Inst pi))) = Left pi
@@ -38,3 +39,7 @@ convPI qpi                    = Right $ convPI' qpi
 
 convPI' :: PI QPN -> PackageId
 convPI' (PI (Q _ pn) (I v _))  = PackageIdentifier pn v
+
+convPI'' :: PI QPN -> Maybe InstalledPackageId
+convPI'' (PI _ (I _ (Inst ipid))) = Just ipid
+convPI'' _                        = Nothing

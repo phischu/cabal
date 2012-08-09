@@ -123,7 +123,7 @@ data Outcome = NotTried | Failed | Ok
 new :: OS -> Arch -> CompilerId -- -> Version
     -> ConfiguredPackage -> BR.BuildResult
     -> BuildReport
-new os' arch' comp (ConfiguredPackage pkg flags _ deps) result =
+new os' arch' comp (ConfiguredPackage pkg flags _ deps _) result =
   BuildReport {
     package               = packageId pkg,
     os                    = os',
