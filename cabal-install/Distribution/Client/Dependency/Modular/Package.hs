@@ -31,7 +31,7 @@ type PId = InstalledPackageId
 -- package instance via its 'PId'.
 --
 -- TODO: More information is needed about the repo.
-data Loc = Inst PId | InRepo
+data Loc = Inst PId Integer | InRepo
   deriving (Eq, Ord, Show)
 
 -- | Instance. A version number and a location.
@@ -41,7 +41,7 @@ data I = I Ver Loc
 -- | String representation of an instance.
 showI :: I -> String
 showI (I v InRepo)   = showVer v
-showI (I v (Inst (InstalledPackageId i))) = showVer v ++ "/installed" ++ shortId i
+showI (I v (Inst (InstalledPackageId i) _)) = showVer v ++ "/installed" ++ shortId i
   where
     -- A hack to extract the beginning of the package ABI hash
     shortId = snip (splitAt 4) (++ "...") .
@@ -59,12 +59,12 @@ showPI (PI qpn i) = showQPN qpn ++ "-" ++ showI i
 
 -- | Checks if a package instance corresponds to an installed package.
 instPI :: PI qpn -> Bool
-instPI (PI _ (I _ (Inst _))) = True
-instPI _                     = False
+instPI (PI _ (I _ (Inst _ _))) = True
+instPI _                       = False
 
 instI :: I -> Bool
-instI (I _ (Inst _)) = True
-instI _              = False
+instI (I _ (Inst _ _)) = True
+instI _                = False
 
 instance Functor PI where
   fmap f (PI x y) = PI (f x) y

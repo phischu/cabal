@@ -59,8 +59,9 @@ convIPI sip = mkIndex . convIPI' sip
 convIP :: SI.PackageIndex -> InstalledPackageInfo -> (PN, I, PInfo)
 convIP idx ipi =
   let ipid = installedPackageId ipi
-      i = I (pkgVersion (sourcePackageId ipi)) (Inst ipid)
+      i = I (pkgVersion (sourcePackageId ipi)) (Inst ipid ts)
       pn = pkgName (sourcePackageId ipi)
+      ts = timeStamp ipi
   in  case mapM (convIPId pn idx) (IPI.depends ipi) of
         Nothing  -> (pn, i, PInfo [] M.empty [] (Just Broken))
         Just fds -> (pn, i, PInfo fds M.empty [] Nothing)
@@ -76,8 +77,9 @@ convIPId :: PN -> SI.PackageIndex -> InstalledPackageId -> Maybe (FlaggedDep PN)
 convIPId pn' idx ipid =
   case SI.lookupInstalledPackageId idx ipid of
     Nothing  -> Nothing
-    Just ipi -> let i = I (pkgVersion (sourcePackageId ipi)) (Inst ipid)
+    Just ipi -> let i = I (pkgVersion (sourcePackageId ipi)) (Inst ipid ts)
                     pn = pkgName (sourcePackageId ipi)
+                    ts = timeStamp ipi
                 in  Just (D.Simple (Dep pn (Fixed i (Goal (P pn') []))))
 
 -- | Convert a cabal-install source package index to the simpler,

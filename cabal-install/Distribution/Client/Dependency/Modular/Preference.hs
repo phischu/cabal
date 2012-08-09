@@ -55,14 +55,22 @@ preferPackagePreferences pcs = packageOrderFor (const True) preference
 
 -- | Ordering that treats installed instances as greater than uninstalled ones.
 preferInstalledOrdering :: I -> I -> Ordering
-preferInstalledOrdering (I _ (Inst _)) (I _ (Inst _)) = EQ
-preferInstalledOrdering (I _ (Inst _)) _              = GT
-preferInstalledOrdering _              (I _ (Inst _)) = LT
-preferInstalledOrdering _              _              = EQ
+preferInstalledOrdering (I _ (Inst _ _)) (I _ (Inst _ _)) = EQ
+preferInstalledOrdering (I _ (Inst _ _)) _                = GT
+preferInstalledOrdering _                (I _ (Inst _ _)) = LT
+preferInstalledOrdering _                _                = EQ
 
 -- | Compare instances by their version numbers.
 preferLatestOrdering :: I -> I -> Ordering
 preferLatestOrdering (I v1 _) (I v2 _) = compare v1 v2
+
+-- | Reorder the Tree preferring packages with a later timestamp.
+-- Accidentally also prefer installed packages. Should be run
+-- first.
+preferLatestTimestamps :: Tree a -> Tree a
+preferLatestTimestamps = packageOrderFor (const True) (const (comparing timestamp)) where
+    timestamp (I _ (Inst _ ts)) = ts
+    timestamp _                 = 0
 
 -- | Helper function that tries to enforce a single package constraint on a
 -- given instance for a P-node. Translates the constraint into a
@@ -169,8 +177,8 @@ requireInstalled p = trav go
       | p pn      = PChoiceF v i (P.mapWithKey installed cs)
       | otherwise = PChoiceF v i                         cs
       where
-        installed (I _ (Inst _)) x = x
-        installed _              _ = Fail (toConflictSet (Goal (P v) gr)) CannotInstall
+        installed (I _ (Inst _ _)) x = x
+        installed _                _ = Fail (toConflictSet (Goal (P v) gr)) CannotInstall
     go x          = x
 
 -- | Avoid reinstalls.
@@ -194,7 +202,7 @@ avoidReinstalls p = trav go
       | otherwise = PChoiceF qpn i cs
       where
         disableReinstalls =
-          let installed = [ v | (I v (Inst _), _) <- toList cs ]
+          let installed = [ v | (I v (Inst _ _), _) <- toList cs ]
           in  P.mapWithKey (notReinstall installed) cs
 
         notReinstall vs (I v InRepo) _

@@ -43,7 +43,7 @@ solve sc idx userPrefs userConstraints userGoals =
                        if preferEasyGoalChoices sc
                          then P.preferBaseGoalChoice . P.deferDefaultFlagChoices . P.lpreferEasyGoalChoices
                          else P.preferBaseGoalChoice
-    preferencesPhase = P.preferPackagePreferences userPrefs
+    preferencesPhase = P.preferPackagePreferences userPrefs . P.preferLatestTimestamps
     validationPhase  = P.enforceManualFlags . -- can only be done after user constraints
                        P.enforcePackageConstraints userConstraints .
                        validateTree idx

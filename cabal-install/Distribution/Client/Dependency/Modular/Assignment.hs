@@ -145,8 +145,8 @@ finalize idx (A pa fa _) rdm =
         vs -> " (" ++ intercalate ", " (L.map showVer vs) ++ ")"
       where insts = L.map (\ (I v _) -> v) $ L.filter isInstalled $
                     M.keys (M.findWithDefault M.empty pn idx)
-            isInstalled (I _ (Inst _ )) = True
-            isInstalled _               = False
+            isInstalled (I _ (Inst _ _)) = True
+            isInstalled _                = False
     -- print flag assignment
     pflags = unwords . L.map (uncurry showFBool)
   in
