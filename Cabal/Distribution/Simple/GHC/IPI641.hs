@@ -125,5 +125,6 @@ toCurrent ipi@InstalledPackageInfo{} = Current.InstalledPackageInfo {
     Current.frameworkDirs      = frameworkDirs ipi,
     Current.frameworks         = frameworks ipi,
     Current.haddockInterfaces  = haddockInterfaces ipi,
-    Current.haddockHTMLs       = haddockHTMLs ipi
+    Current.haddockHTMLs       = haddockHTMLs ipi,
+    Current.timeStamp          = 0
   }
