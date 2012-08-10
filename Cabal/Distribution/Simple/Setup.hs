@@ -322,8 +322,7 @@ defaultConfigFlags progConf = emptyConfigFlags {
     configStripExes    = Flag True,
     configTests  = Flag False,
     configBenchmarks   = Flag False,
-    configLibCoverage = Flag False,
-    configInstalledPackageIdSuffix = NoFlag
+    configLibCoverage = Flag False
   }
 
 configureCommand :: ProgramConfiguration -> CommandUI ConfigFlags
