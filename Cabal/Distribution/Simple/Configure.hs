@@ -366,7 +366,7 @@ configure (pkg_descr0, pbi) cfg
           (updatePackageDescription pbi pkg_descr)
 
         -- we first select the package instances that are specified
-        -- on the command line via -installed-package-id
+        -- on the command line via --dependency
         -- we then resolve the remaining not yet satisfied constraints
         -- packages with higher version have primary priority
         -- packages that were installed later have secondary priority
@@ -395,17 +395,6 @@ configure (pkg_descr0, pbi) cfg
             internalPkgDeps = resolvedInternalPackages
             externalPkgDeps = resolvedExternalPackages ++ selectedDependencies 
 
-{-
-
-selectDependencies =
-                (\xs -> ([ x | Left x <- xs ], [ x | Right x <- xs ]))
-              . map (selectDependency internalPackageSet installedPackageSet)
-
-            (failedDeps, allPkgDeps) = selectDependencies (buildDepends pkg_descr)
-
-            internalPkgDeps = [ pkgid | InternalDependency _ pkgid <- allPkgDeps ]
-            externalPkgDeps = [ pkg   | ExternalDependency _ pkg   <- allPkgDeps ]
--}
         when (not (null internalPkgDeps) && not (newPackageDepsBehaviour pkg_descr)) $
             die $ "The field 'build-depends: "
                ++ intercalate ", " (map (display . packageName) internalPkgDeps)
