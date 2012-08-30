@@ -27,6 +27,7 @@ module Distribution.Client.Setup
     , reportCommand, ReportFlags(..)
     , unpackCommand, UnpackFlags(..)
     , initCommand, IT.InitFlags(..)
+    , removeCommand, RemoveFlags(..)
     , sdistCommand, SDistFlags(..), SDistExFlags(..), ArchiveFormat(..)
 
     , parsePackageArgs
@@ -62,7 +63,8 @@ import Distribution.Simple.InstallDirs
 import Distribution.Version
          ( Version(Version), anyVersion, thisVersion )
 import Distribution.Package
-         ( PackageIdentifier, packageName, packageVersion, Dependency(..) )
+         ( PackageIdentifier, packageName, packageVersion, Dependency(..),
+           InstalledPackageId )
 import Distribution.Text
          ( Text(..), display )
 import Distribution.ReadE
@@ -1095,6 +1097,74 @@ initCommand = CommandUI {
   where readMaybe s = case reads s of
                         [(x,"")]  -> Just x
                         _         -> Nothing
+
+-- ------------------------------------------------------------
+-- * Remove flags
+-- ------------------------------------------------------------
+
+data RemoveFlags = RemoveFlags {
+    removeVerbosity    :: Flag Verbosity,
+    singlePackage      :: Flag InstalledPackageId,
+    duplicates         :: Flag Bool,
+    really             :: Flag Bool
+  }
+    deriving (Show)
+
+instance Monoid RemoveFlags where
+  mempty = RemoveFlags {
+    removeVerbosity    = mempty,
+    singlePackage      = mempty,
+    duplicates         = mempty,
+    really             = mempty
+  }
+  mappend a b = RemoveFlags {
+    removeVerbosity    = combine removeVerbosity,
+    singlePackage      = combine singlePackage,
+    duplicates         = combine duplicates,
+    really             = combine really
+  }
+    where combine field = field a `mappend` field b
+
+removeCommand :: CommandUI RemoveFlags
+removeCommand = CommandUI {
+    commandName         = "remove",
+    commandSynopsis     = "Removes one or more packages.",
+    commandUsage        = \pname -> pname ++ "remove [FLAGS]" ,
+    commandDescription  = Nothing,
+    commandDefaultFlags = mempty,
+    commandOptions      = \_ -> [
+
+        optionVerbosity removeVerbosity (\v flags -> flags { removeVerbosity = v })
+
+       ,option
+           "p"
+           ["package-id"]
+           "Remove the single package with the given InstalledPackageId."
+           singlePackage
+           (\v flags -> flags { singlePackage = v })
+           (reqArg
+               "INSTALLEDPACKAGEID"
+               (readP_to_E ("Cannot parse InstalledPackageId: "++) (fmap toFlag parse))
+               (flagToList . fmap display))
+
+       ,option
+           "d"
+           ["duplicates"]
+           "Remove duplicate instances of a package version except the latest one."
+           duplicates
+           (\v flags -> flags { duplicates = v })
+           trueArg
+
+       ,option
+           []
+           ["really"]
+           "Actually remove the package(s) from the PackageDB and filesystem"
+           really
+           (\v flags -> flags { really = v })
+           trueArg
+
+       ]
+  }
 
 -- ------------------------------------------------------------
 -- * SDist flags

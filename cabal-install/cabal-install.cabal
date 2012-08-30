@@ -89,6 +89,7 @@ Executable cabal
         Distribution.Client.List
         Distribution.Client.PackageIndex
         Distribution.Client.PackageUtils
+        Distribution.Client.Remove
         Distribution.Client.Setup
         Distribution.Client.SetupWrapper
         Distribution.Client.SrcDist

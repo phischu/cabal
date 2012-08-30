@@ -27,6 +27,7 @@ import Distribution.Client.Setup
          , UploadFlags(..), uploadCommand
          , ReportFlags(..), reportCommand
          , InitFlags(initVerbosity), initCommand
+         , RemoveFlags(removeVerbosity) , removeCommand
          , SDistFlags(..), SDistExFlags(..), sdistCommand
          , reportCommand
          , unpackCommand, UnpackFlags(..) )
@@ -59,6 +60,7 @@ import Distribution.Client.Upload as Upload (upload, check, report)
 import Distribution.Client.SrcDist          (sdist)
 import Distribution.Client.Unpack           (unpack)
 import Distribution.Client.Init             (initCabal)
+import Distribution.Client.Remove           (remove)
 import qualified Distribution.Client.Win32SelfUpgrade as Win32SelfUpgrade
 
 import Distribution.Simple.Compiler
@@ -138,6 +140,7 @@ mainWorker args = topHandler $
       ,reportCommand          `commandAddAction` reportAction
       ,initCommand            `commandAddAction` initAction
       ,configureExCommand     `commandAddAction` configureAction
+      ,removeCommand          `commandAddAction` removeAction
       ,wrapperAction (buildCommand defaultProgramConfiguration)
                      buildVerbosity    buildDistPref
       ,wrapperAction copyCommand
@@ -370,6 +373,17 @@ initAction initFlags _extraArgs globalFlags = do
             comp
             conf
             initFlags
+
+removeAction :: RemoveFlags -> [String] -> GlobalFlags -> IO ()
+removeAction removeFlags _extraArgs globalFlags = do
+  let verbosity = fromFlagOrDefault normal  (removeVerbosity removeFlags)
+  config <- loadConfig verbosity (globalConfigFile globalFlags) mempty
+  let configFlags = savedConfigureFlags config
+  (comp, conf) <- configCompilerAux' configFlags
+  remove (configPackageDB' configFlags)
+         comp
+         conf
+         removeFlags
 
 -- | See 'Distribution.Client.Install.withWin32SelfUpgrade' for details.
 --
