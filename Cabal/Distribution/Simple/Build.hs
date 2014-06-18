@@ -468,6 +468,7 @@ buildExe verbosity numJobs pkg_descr lbi exe clbi =
     Hugs -> Hugs.buildExe verbosity         pkg_descr lbi exe clbi
     NHC  -> NHC.buildExe  verbosity         pkg_descr lbi exe clbi
     UHC  -> UHC.buildExe  verbosity         pkg_descr lbi exe clbi
+    HaskellSuite {} -> warn "Cannot build exe with HaskellSuite"
     _    -> die "Building is not supported with this compiler."
 
 
