@@ -1,13 +1,13 @@
+{-# LANGUAGE DeriveFunctor, DeriveFoldable, DeriveFoldable, DeriveTraversable #-}
 module Distribution.Client.Dependency.Modular.PSQ where
 
 -- Priority search queues.
 --
--- I am not yet sure what exactly is needed. But we need a datastructure with
+-- I am not yet sure what exactly is needed. But we need a data structure with
 -- key-based lookup that can be sorted. We're using a sequence right now with
 -- (inefficiently implemented) lookup, because I think that queue-based
--- opertions and sorting turn out to be more efficiency-critical in practice.
+-- operations and sorting turn out to be more efficiency-critical in practice.
 
-import Control.Applicative
 import Data.Foldable
 import Data.Function
 import Data.List as S hiding (foldr)
@@ -15,16 +15,7 @@ import Data.Traversable
 import Prelude hiding (foldr)
 
 newtype PSQ k v = PSQ [(k, v)]
-  deriving (Eq, Show)
-
-instance Functor (PSQ k) where
-  fmap f (PSQ xs) = PSQ (fmap (\ (k, v) -> (k, f v)) xs)
-
-instance Foldable (PSQ k) where
-  foldr op e (PSQ xs) = foldr op e (fmap snd xs)
-
-instance Traversable (PSQ k) where
-  traverse f (PSQ xs) = PSQ <$> traverse (\ (k, v) -> (\ x -> (k, x)) <$> f v) xs
+  deriving (Eq, Show, Functor, Foldable, Traversable)
 
 keys :: PSQ k v -> [k]
 keys (PSQ xs) = fmap fst xs
@@ -66,10 +57,11 @@ casePSQ (PSQ xs) n c =
     (k, v) : ys -> c k v (PSQ ys)
 
 splits :: PSQ k a -> PSQ k (a, PSQ k a)
-splits xs =
-  casePSQ xs
-    (PSQ [])
-    (\ k v ys -> cons k (v, ys) (fmap (\ (w, zs) -> (w, cons k v zs)) (splits ys)))
+splits = go id 
+  where
+    go f xs = casePSQ xs
+        (PSQ [])
+        (\ k v ys -> cons k (v, f ys) (go (f . cons k v) ys))
 
 sortBy :: (a -> a -> Ordering) -> PSQ k a -> PSQ k a
 sortBy cmp (PSQ xs) = PSQ (S.sortBy (cmp `on` snd) xs)

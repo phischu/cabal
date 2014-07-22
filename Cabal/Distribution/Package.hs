@@ -1,7 +1,9 @@
+{-# LANGUAGE DeriveDataTypeable #-}
 -----------------------------------------------------------------------------
 -- |
 -- Module      :  Distribution.Package
 -- Copyright   :  Isaac Jones 2003-2004
+-- License     :  BSD3
 --
 -- Maintainer  :  cabal-devel@haskell.org
 -- Portability :  portable
@@ -10,36 +12,6 @@
 -- 'PackageIdentifier's consist of a name and an exact version. It also defines
 -- a 'Dependency' data type. A dependency is a package name and a version
 -- range, like @\"foo >= 1.2 && < 2\"@.
-
-{- All rights reserved.
-
-Redistribution and use in source and binary forms, with or without
-modification, are permitted provided that the following conditions are
-met:
-
-    * Redistributions of source code must retain the above copyright
-      notice, this list of conditions and the following disclaimer.
-
-    * Redistributions in binary form must reproduce the above
-      copyright notice, this list of conditions and the following
-      disclaimer in the documentation and/or other materials provided
-      with the distribution.
-
-    * Neither the name of Isaac Jones nor the names of other
-      contributors may be used to endorse or promote products derived
-      from this software without specific prior written permission.
-
-THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. -}
 
 module Distribution.Package (
         -- * Package ids
@@ -70,23 +42,29 @@ import qualified Distribution.Compat.ReadP as Parse
 import Distribution.Compat.ReadP ((<++))
 import qualified Text.PrettyPrint as Disp
 import Text.PrettyPrint ((<>), (<+>), text)
+import Control.DeepSeq (NFData(..))
 import qualified Data.Char as Char ( isDigit, isAlphaNum )
-import Data.List ( intersperse )
+import Data.List ( intercalate )
+import Data.Data ( Data )
+import Data.Typeable ( Typeable )
 
 newtype PackageName = PackageName String
-    deriving (Read, Show, Eq, Ord)
+    deriving (Read, Show, Eq, Ord, Typeable, Data)
 
 instance Text PackageName where
   disp (PackageName n) = Disp.text n
   parse = do
     ns <- Parse.sepBy1 component (Parse.char '-')
-    return (PackageName (concat (intersperse "-" ns)))
+    return (PackageName (intercalate "-" ns))
     where
       component = do
         cs <- Parse.munch1 Char.isAlphaNum
         if all Char.isDigit cs then Parse.pfail else return cs
         -- each component must contain an alphabetic character, to avoid
         -- ambiguity in identifiers like foo-1 (the 1 is the version number).
+
+instance NFData PackageName where
+    rnf (PackageName pkg) = rnf pkg
 
 -- | Type alias so we can use the shorter name PackageId.
 type PackageId = PackageIdentifier
@@ -97,7 +75,7 @@ data PackageIdentifier
         pkgName    :: PackageName, -- ^The name of this package, eg. foo
         pkgVersion :: Version -- ^the version of this package, eg 1.2
      }
-     deriving (Read, Show, Eq, Ord)
+     deriving (Read, Show, Eq, Ord, Typeable, Data)
 
 instance Text PackageIdentifier where
   disp (PackageIdentifier n v) = case v of
@@ -109,16 +87,19 @@ instance Text PackageIdentifier where
     v <- (Parse.char '-' >> parse) <++ return (Version [] [])
     return (PackageIdentifier n v)
 
+instance NFData PackageIdentifier where
+    rnf (PackageIdentifier name version) = rnf name `seq` rnf version
+
 -- ------------------------------------------------------------
 -- * Installed Package Ids
 -- ------------------------------------------------------------
 
--- | An InstalledPackageId uniquely identifies an instance of an installed package.
--- There can be at most one package with a given 'InstalledPackageId'
+-- | An InstalledPackageId uniquely identifies an instance of an installed
+-- package.  There can be at most one package with a given 'InstalledPackageId'
 -- in a package database, or overlay of databases.
 --
 newtype InstalledPackageId = InstalledPackageId String
- deriving (Read,Show,Eq,Ord)
+ deriving (Read,Show,Eq,Ord,Typeable,Data)
 
 instance Text InstalledPackageId where
   disp (InstalledPackageId str) = text str
@@ -133,7 +114,7 @@ instance Text InstalledPackageId where
 -- | Describes a dependency on a source package (API)
 --
 data Dependency = Dependency PackageName VersionRange
-                  deriving (Read, Show, Eq)
+                  deriving (Read, Show, Eq, Typeable, Data)
 
 instance Text Dependency where
   disp (Dependency name ver) =

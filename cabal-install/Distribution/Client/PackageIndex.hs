@@ -1,3 +1,4 @@
+{-# LANGUAGE DeriveFunctor #-}
 -----------------------------------------------------------------------------
 -- |
 -- Module      :  Distribution.Client.PackageIndex
@@ -63,7 +64,7 @@ import qualified Data.Array as Array
 import Data.Array ((!))
 import Data.List (groupBy, sortBy, nub, isInfixOf)
 import Data.Monoid (Monoid(..))
-import Data.Maybe (isJust, isNothing, fromMaybe)
+import Data.Maybe (isJust, isNothing, fromMaybe, catMaybes)
 
 import Distribution.Package
          ( PackageName(..), PackageIdentifier(..)
@@ -76,7 +77,7 @@ import Distribution.Simple.Utils (lowercase, equating, comparing)
 
 -- | The collection of information about packages from one or more 'PackageDB's.
 --
--- It can be searched effeciently by package name and version.
+-- It can be searched efficiently by package name and version.
 --
 newtype PackageIndex pkg = PackageIndex
   -- This index package names to all the package records matching that package
@@ -87,10 +88,10 @@ newtype PackageIndex pkg = PackageIndex
   --
   (Map PackageName [pkg])
 
-  deriving (Show, Read)
+  deriving (Show, Read, Functor)
 
 instance Package pkg => Monoid (PackageIndex pkg) where
-  mempty  = PackageIndex (Map.empty)
+  mempty  = PackageIndex Map.empty
   mappend = merge
   --save one mappend with empty in the common case:
   mconcat [] = mempty
@@ -282,12 +283,12 @@ lookupDependency index (Dependency name versionRange) =
 
 -- | Does a case-insensitive search by package name.
 --
--- If there is only one package that compares case-insentiviely to this name
+-- If there is only one package that compares case-insensitively to this name
 -- then the search is unambiguous and we get back all versions of that package.
--- If several match case-insentiviely but one matches exactly then it is also
+-- If several match case-insensitively but one matches exactly then it is also
 -- unambiguous.
 --
--- If however several match case-insentiviely and none match exactly then we
+-- If however several match case-insensitively and none match exactly then we
 -- have an ambiguous result, and we get back all the versions of all the
 -- packages. The list of ambiguous results is split by exact package name. So
 -- it is a non-empty list of non-empty lists.
@@ -334,9 +335,9 @@ brokenPackages index =
                          , isNothing (lookupPackageId index pkg') ]
   , not (null missing) ]
 
--- | Tries to take the transative closure of the package dependencies.
+-- | Tries to take the transitive closure of the package dependencies.
 --
--- If the transative closure is complete then it returns that subset of the
+-- If the transitive closure is complete then it returns that subset of the
 -- index. Otherwise it returns the broken packages as in 'brokenPackages'.
 --
 -- * Note that if the result is @Right []@ it is because at least one of
@@ -360,7 +361,7 @@ dependencyClosure index pkgids0 = case closure mempty [] pkgids0 of
           where completed' = insert pkg completed
                 pkgids'    = depends pkg ++ pkgids
 
--- | Takes the transative closure of the packages reverse dependencies.
+-- | Takes the transitive closure of the packages reverse dependencies.
 --
 -- * The given 'PackageIdentifier's must be in the index.
 --
@@ -466,9 +467,8 @@ dependencyGraph :: PackageFixedDeps pkg
                     PackageIdentifier -> Maybe Graph.Vertex)
 dependencyGraph index = (graph, vertexToPkg, pkgIdToVertex)
   where
-    graph = Array.listArray bounds
-              [ [ v | Just v <- map pkgIdToVertex (depends pkg) ]
-              | pkg <- pkgs ]
+    graph = Array.listArray bounds $
+            map (catMaybes . map pkgIdToVertex . depends) pkgs
     vertexToPkg vertex = pkgTable ! vertex
     pkgIdToVertex = binarySearch 0 topBound
 

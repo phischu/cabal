@@ -1,8 +1,10 @@
+{-# LANGUAGE CPP, DeriveDataTypeable, StandaloneDeriving #-}
 -----------------------------------------------------------------------------
 -- |
 -- Module      :  Distribution.Version
 -- Copyright   :  Isaac Jones, Simon Marlow 2003-2004
 --                Duncan Coutts 2008
+-- License     :  BSD3
 --
 -- Maintainer  :  cabal-devel@haskell.org
 -- Portability :  portable
@@ -10,37 +12,6 @@
 -- Exports the 'Version' type along with a parser and pretty printer. A version
 -- is something like @\"1.3.3\"@. It also defines the 'VersionRange' data
 -- types. Version ranges are like @\">= 1.2 && < 2\"@.
-
-{- Copyright (c) 2003-2004, Isaac Jones
-All rights reserved.
-
-Redistribution and use in source and binary forms, with or without
-modification, are permitted provided that the following conditions are
-met:
-
-    * Redistributions of source code must retain the above copyright
-      notice, this list of conditions and the following disclaimer.
-
-    * Redistributions in binary form must reproduce the above
-      copyright notice, this list of conditions and the following
-      disclaimer in the documentation and/or other materials provided
-      with the distribution.
-
-    * Neither the name of Isaac Jones nor the names of other
-      contributors may be used to endorse or promote products derived
-      from this software without specific prior written permission.
-
-THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. -}
 
 module Distribution.Version (
   -- * Package versions
@@ -67,6 +38,9 @@ module Distribution.Version (
   foldVersionRange,
   foldVersionRange',
 
+  -- ** Modification
+  removeUpperBound,
+
   -- * Version intervals view
   asVersionIntervals,
   VersionInterval,
@@ -91,6 +65,8 @@ module Distribution.Version (
 
  ) where
 
+import Data.Data        ( Data )
+import Data.Typeable    ( Typeable )
 import Data.Version     ( Version(..) )
 
 import Distribution.Text ( Text(..) )
@@ -116,7 +92,12 @@ data VersionRange
   | UnionVersionRanges     VersionRange VersionRange
   | IntersectVersionRanges VersionRange VersionRange
   | VersionRangeParens     VersionRange -- just '(exp)' parentheses syntax
-  deriving (Show,Read,Eq)
+  deriving (Show,Read,Eq,Typeable,Data)
+
+#if __GLASGOW_HASKELL__ < 707
+-- starting with ghc-7.7/base-4.7 this instance is provided in "Data.Data"
+deriving instance Data Version
+#endif
 
 {-# DEPRECATED AnyVersion "Use 'anyVersion', 'foldVersionRange' or 'asVersionIntervals'" #-}
 {-# DEPRECATED ThisVersion "use 'thisVersion', 'foldVersionRange' or 'asVersionIntervals'" #-}
@@ -139,7 +120,7 @@ anyVersion = AnyVersion
 -- This can be constructed using any unsatisfiable version range expression,
 -- for example @> 1 && < 1@.
 --
--- > withinRange v anyVersion = False
+-- > withinRange v noVersion = False
 --
 noVersion :: VersionRange
 noVersion = IntersectVersionRanges (LaterVersion v) (EarlierVersion v)
@@ -227,12 +208,23 @@ betweenVersionsInclusive v1 v2 =
   IntersectVersionRanges (orLaterVersion v1) (orEarlierVersion v2)
 
 {-# DEPRECATED betweenVersionsInclusive
-    "In practice this is not very useful because we normally use inclusive lower bounds and exclusive upper bounds"
-  #-}
+    "In practice this is not very useful because we normally use inclusive lower bounds and exclusive upper bounds" #-}
+
+-- | Given a version range, remove the highest upper bound. Example: @(>= 1 && <
+-- 3) || (>= 4 && < 5)@ is converted to @(>= 1 && < 3) || (>= 4)@.
+removeUpperBound :: VersionRange -> VersionRange
+removeUpperBound = fromVersionIntervals . relaxLastInterval . toVersionIntervals
+  where
+    relaxLastInterval (VersionIntervals intervals) =
+      VersionIntervals (relaxLastInterval' intervals)
+
+    relaxLastInterval' []      = []
+    relaxLastInterval' [(l,_)] = [(l, NoUpperBound)]
+    relaxLastInterval' (i:is)  = i : relaxLastInterval' is
 
 -- | Fold over the basic syntactic structure of a 'VersionRange'.
 --
--- This provides a syntacic view of the expression defining the version range.
+-- This provides a syntactic view of the expression defining the version range.
 -- The syntactic sugar @\">= v\"@, @\"<= v\"@ and @\"== v.*\"@ is presented
 -- in terms of the other basic syntax.
 --
@@ -408,7 +400,7 @@ simplifyVersionRange vr
 --
 
 wildcardUpperBound :: Version -> Version
-wildcardUpperBound (Version lowerBound ts) = (Version upperBound ts)
+wildcardUpperBound (Version lowerBound ts) = Version upperBound ts
   where
     upperBound = init lowerBound ++ [last lowerBound + 1]
 
@@ -486,7 +478,7 @@ checkInvariant is = assert (invariant is) is
 -- | Directly construct a 'VersionIntervals' from a list of intervals.
 --
 -- Each interval must be non-empty. The sequence must be in increasing order
--- and no invervals may overlap or touch. If any of these conditions are not
+-- and no intervals may overlap or touch. If any of these conditions are not
 -- satisfied the function returns @Nothing@.
 --
 mkVersionIntervals :: [VersionInterval] -> Maybe VersionIntervals

@@ -2,6 +2,7 @@
 -- |
 -- Module      :  Distribution.Simple.Compiler
 -- Copyright   :  Isaac Jones 2003-2004
+-- License     :  BSD3
 --
 -- Maintainer  :  cabal-devel@haskell.org
 -- Portability :  portable
@@ -17,36 +18,6 @@
 -- per-user one and it lets you create arbitrary other package databases. We do
 -- not yet fully support this latter feature.
 
-{- All rights reserved.
-
-Redistribution and use in source and binary forms, with or without
-modification, are permitted provided that the following conditions are
-met:
-
-    * Redistributions of source code must retain the above copyright
-      notice, this list of conditions and the following disclaimer.
-
-    * Redistributions in binary form must reproduce the above
-      copyright notice, this list of conditions and the following
-      disclaimer in the documentation and/or other materials provided
-      with the distribution.
-
-    * Neither the name of Isaac Jones nor the names of other
-      contributors may be used to endorse or promote products derived
-      from this software without specific prior written permission.
-
-THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. -}
-
 module Distribution.Simple.Compiler (
         -- * Haskell implementations
         module Distribution.Compiler,
@@ -57,6 +28,8 @@ module Distribution.Simple.Compiler (
         PackageDB(..),
         PackageDBStack,
         registrationPackageDB,
+        absolutePackageDBPaths,
+        absolutePackageDBPath,
 
         -- * Support for optimisation levels
         OptimisationLevel(..),
@@ -67,7 +40,8 @@ module Distribution.Simple.Compiler (
         languageToFlags,
         unsupportedLanguages,
         extensionsToFlags,
-        unsupportedExtensions
+        unsupportedExtensions,
+        parmakeSupported
   ) where
 
 import Distribution.Compiler
@@ -75,13 +49,21 @@ import Distribution.Version (Version(..))
 import Distribution.Text (display)
 import Language.Haskell.Extension (Language(Haskell98), Extension)
 
+import Control.Monad (liftM)
 import Data.List (nub)
+import qualified Data.Map as M (Map, lookup)
 import Data.Maybe (catMaybes, isNothing)
+import System.Directory (canonicalizePath)
 
 data Compiler = Compiler {
         compilerId              :: CompilerId,
+        -- ^ Compiler flavour and version.
         compilerLanguages       :: [(Language, Flag)],
-        compilerExtensions      :: [(Extension, Flag)]
+        -- ^ Supported language standards.
+        compilerExtensions      :: [(Extension, Flag)],
+        -- ^ Supported extensions.
+        compilerProperties      :: M.Map String String
+        -- ^ A key-value map for properties not covered by the above fields.
     }
     deriving (Show, Read)
 
@@ -134,6 +116,18 @@ type PackageDBStack = [PackageDB]
 registrationPackageDB :: PackageDBStack -> PackageDB
 registrationPackageDB []  = error "internal error: empty package db set"
 registrationPackageDB dbs = last dbs
+
+-- | Make package paths absolute
+
+
+absolutePackageDBPaths :: PackageDBStack -> IO PackageDBStack
+absolutePackageDBPaths = mapM absolutePackageDBPath
+
+absolutePackageDBPath :: PackageDB -> IO PackageDB
+absolutePackageDBPath GlobalPackageDB        = return GlobalPackageDB
+absolutePackageDBPath UserPackageDB          = return UserPackageDB
+absolutePackageDBPath (SpecificPackageDB db) =
+  SpecificPackageDB `liftM` canonicalizePath db
 
 -- ------------------------------------------------------------
 -- * Optimisation levels
@@ -192,3 +186,12 @@ extensionsToFlags comp = nub . filter (not . null)
 
 extensionToFlag :: Compiler -> Extension -> Maybe Flag
 extensionToFlag comp ext = lookup ext (compilerExtensions comp)
+
+-- | Does this compiler support parallel --make mode?
+parmakeSupported :: Compiler -> Bool
+parmakeSupported comp =
+  case compilerFlavor comp of
+    GHC -> case M.lookup "Support parallel --make" (compilerProperties comp) of
+      Just "YES" -> True
+      _          -> False
+    _   -> False

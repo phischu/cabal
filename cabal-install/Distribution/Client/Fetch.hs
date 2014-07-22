@@ -37,7 +37,7 @@ import Distribution.Simple.Setup
 import Distribution.Simple.Utils
          ( die, notice, debug )
 import Distribution.System
-         ( buildPlatform )
+         ( Platform )
 import Distribution.Text
          ( display )
 import Distribution.Verbosity
@@ -66,15 +66,16 @@ fetch :: Verbosity
       -> PackageDBStack
       -> [Repo]
       -> Compiler
+      -> Platform
       -> ProgramConfiguration
       -> GlobalFlags
       -> FetchFlags
       -> [UserTarget]
       -> IO ()
-fetch verbosity _ _ _ _ _ _ [] =
+fetch verbosity _ _ _ _ _ _ _ [] =
     notice verbosity "No packages requested. Nothing to do."
 
-fetch verbosity packageDBs repos comp conf
+fetch verbosity packageDBs repos comp platform conf
       globalFlags fetchFlags userTargets = do
 
     mapM_ checkTarget userTargets
@@ -88,7 +89,7 @@ fetch verbosity packageDBs repos comp conf
                        userTargets
 
     pkgs  <- planPackages
-               verbosity comp fetchFlags
+               verbosity comp platform fetchFlags
                installedPkgIndex sourcePkgDb pkgSpecifiers
 
     pkgs' <- filterM (fmap not . isFetched . packageSource) pkgs
@@ -111,20 +112,22 @@ fetch verbosity packageDBs repos comp conf
 
 planPackages :: Verbosity
              -> Compiler
+             -> Platform
              -> FetchFlags
              -> PackageIndex
              -> SourcePackageDb
              -> [PackageSpecifier SourcePackage]
              -> IO [SourcePackage]
-planPackages verbosity comp fetchFlags
+planPackages verbosity comp platform fetchFlags
              installedPkgIndex sourcePkgDb pkgSpecifiers
 
   | includeDependencies = do
-      solver <- chooseSolver verbosity (fromFlag (fetchSolver fetchFlags)) (compilerId comp)
+      solver <- chooseSolver verbosity
+                (fromFlag (fetchSolver fetchFlags)) (compilerId comp)
       notice verbosity "Resolving dependencies..."
       installPlan <- foldProgress logMsg die return $
                        resolveDependencies
-                         buildPlatform (compilerId comp)
+                         platform (compilerId comp)
                          solver
                          resolverParams
 
@@ -151,6 +154,8 @@ planPackages verbosity comp fetchFlags
 
       . setShadowPkgs shadowPkgs
 
+      . setStrongFlags strongFlags
+
         -- Reinstall the targets given on the command line so that the dep
         -- resolver will decide that they need fetching, even if they're
         -- already installed. Since we want to get the source packages of
@@ -165,6 +170,7 @@ planPackages verbosity comp fetchFlags
     reorderGoals     = fromFlag (fetchReorderGoals     fetchFlags)
     independentGoals = fromFlag (fetchIndependentGoals fetchFlags)
     shadowPkgs       = fromFlag (fetchShadowPkgs       fetchFlags)
+    strongFlags      = fromFlag (fetchStrongFlags      fetchFlags)
     maxBackjumps     = fromFlag (fetchMaxBackjumps     fetchFlags)
 
 

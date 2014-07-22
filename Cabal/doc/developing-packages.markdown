@@ -1,4 +1,437 @@
-% Cabal User Guide
+% Cabal User Guide: Developing Cabal packages
+
+
+# Quickstart #
+
+
+Lets assume we have created a project directory and already have a
+Haskell module or two.
+
+Every project needs a name, we'll call this example "proglet".
+
+~~~~~~~~~~~
+$ cd proglet/
+$ ls
+Proglet.hs
+~~~~~~~~~~~
+
+It is assumed that (apart from external dependencies) all the files that
+make up a package live under a common project root directory. This
+simple example has all the project files in one directory, but most
+packages will use one or more subdirectories.
+
+To turn this into a Cabal package we need two extra files in the
+project's root directory:
+
+ * `proglet.cabal`: containing package metadata and build information.
+
+ * `Setup.hs`: usually containing a few standardized lines of code, but
+   can be customized if necessary.
+
+We can create both files manually or we can use `cabal init` to create
+them for us.
+
+### Using "cabal init" ###
+
+The `cabal init` command is interactive. It asks us a number of
+questions starting with the package name and version.
+
+~~~~~~~~~~
+$ cabal init
+Package name [default "proglet"]? 
+Package version [default "0.1"]? 
+...
+~~~~~~~~~~
+
+It also asks questions about various other bits of package metadata. For
+a package that you never intend to distribute to others, these fields can
+be left blank.
+
+One of the important questions is whether the package contains a library
+or an executable. Libraries are collections of Haskell modules that can
+be re-used by other Haskell libraries and programs, while executables
+are standalone programs.
+
+~~~~~~~~~~
+What does the package build:
+   1) Library
+   2) Executable
+Your choice?
+~~~~~~~~~~
+
+For the moment these are the only choices. For more complex packages
+(e.g. a library and multiple executables or test suites) the `.cabal`
+file can be edited afterwards.
+
+Finally, `cabal init` creates the initial `proglet.cabal` and `Setup.hs`
+files, and depending on your choice of license, a `LICENSE` file as well.
+
+~~~~~~~~~~
+Generating LICENSE...
+Generating Setup.hs...
+Generating proglet.cabal...
+
+You may want to edit the .cabal file and add a Description field.
+~~~~~~~~~~
+
+As this stage the `proglet.cabal` is not quite complete and before you
+are able to build the package you will need to edit the file and add
+some build information about the library or executable.
+
+### Editing the .cabal file ###
+
+Load up the `.cabal` file in a text editor. The first part of the
+`.cabal` file has the package metadata and towards the end of the file
+you will find the `executable` or `library` section.
+
+You will see that the fields that have yet to be filled in are commented
+out. Cabal files use "`--`" Haskell-style comment syntax. (Note that
+comments are only allowed on lines on their own. Trailing comments on
+other lines are not allowed because they could be confused with program
+options.)
+
+If you selected earlier to create a library package then your `.cabal`
+file will have a section that looks like this:
+
+~~~~~~~~~~~~~~~~~
+library
+  exposed-modules:     Proglet
+  -- other-modules:
+  -- build-depends:
+~~~~~~~~~~~~~~~~~
+
+Alternatively, if you selected an executable then there will be a
+section like:
+
+~~~~~~~~~~~~~~~~~
+executable proglet
+  -- main-is:
+  -- other-modules:
+  -- build-depends:
+~~~~~~~~~~~~~~~~~
+
+The build information fields listed (but commented out) are just the few
+most important and common fields. There are many others that are covered
+later in this chapter.
+
+Most of the build information fields are the same between libraries and
+executables. The difference is that libraries have a number of "exposed"
+modules that make up the public interface of the library, while
+executables have a file containing a `Main` module.
+
+The name of a library always matches the name of the package, so it is
+not specified in the library section. Executables often follow the name
+of the package too, but this is not required and the name is given
+explicitly.
+
+### Modules included in the package ###
+
+For a library, `cabal init` looks in the project directory for files
+that look like Haskell modules and adds all the modules to the
+`exposed-modules` field. For modules that do not form part of your
+package's public interface, you can move those modules to the
+`other-modules` field. Either way, all modules in the library need to be
+listed.
+
+For an executable, `cabal init` does not try to guess which file
+contains your program's `Main` module. You will need to fill in the
+`main-is` field with the file name of your program's `Main` module
+(including `.hs` or `.lhs` extension). Other modules included in the
+executable should be listed in the `other-modules` field.
+
+### Modules imported from other packages ###
+
+While your library or executable may include a number of modules, it
+almost certainly also imports a number of external modules from the
+standard libraries or other pre-packaged libraries. (These other
+libraries are of course just Cabal packages that contain a library.)
+
+You have to list all of the library packages that your library or
+executable imports modules from. Or to put it another way: you have to
+list all the other packages that your package depends on.
+
+For example, suppose the example `Proglet` module imports the module
+`Data.Map`. The `Data.Map` module comes from the `containers` package,
+so we must list it:
+
+~~~~~~~~~~~~~~~~~
+library
+  exposed-modules:     Proglet
+  other-modules:
+  build-depends:       containers, base == 4.*
+~~~~~~~~~~~~~~~~~
+
+In addition, almost every package also depends on the `base` library
+package because it exports the standard `Prelude` module plus other
+basic modules like `Data.List`.
+
+You will notice that we have listed `base == 4.*`. This gives a
+constraint on the version of the base package that our package will work
+with. The most common kinds of constraints are:
+
+ * `pkgname >= n`
+ * `pkgname >= n && < m`
+ * `pkgname == n.*`
+
+The last is just shorthand, for example `base == 4.*` means exactly the
+same thing as `base >= 4 && < 5`.
+
+### Building the package ###
+
+For simple packages that's it! We can now try configuring and building
+the package:
+
+~~~~~~~~~~~~~~~~
+cabal configure
+cabal build
+~~~~~~~~~~~~~~~~
+
+Assuming those two steps worked then you can also install the package:
+
+~~~~~~~~~~~~~~~~
+cabal install
+~~~~~~~~~~~~~~~~
+
+For libraries this makes them available for use in GHCi or to be used by
+other packages. For executables it installs the program so that you can
+run it (though you may first need to adjust your system's `$PATH`).
+
+### Next steps ###
+
+What we have covered so far should be enough for very simple packages
+that you use on your own system.
+
+The next few sections cover more details needed for more complex
+packages and details needed for distributing packages to other people.
+
+The previous chapter covers building and installing packages -- your own
+packages or ones developed by other people.
+
+
+# Package concepts #
+
+Before diving into the details of writing packages it helps to
+understand a bit about packages in the Haskell world and the particular
+approach that Cabal takes.
+
+### The point of packages ###
+
+Packages are a mechanism for organising and distributing code. Packages
+are particularly suited for "programming in the large", that is building
+big systems by using and re-using code written by different people at
+different times.
+
+People organise code into packages based on functionality and
+dependencies. Social factors are also important: most packages have a
+single author, or a relatively small team of authors.
+
+Packages are also used for distribution: the idea is that a package can
+be created in one place and be moved to a different computer and be
+usable in that different environment. There are a surprising number of
+details that have to be got right for this to work, and a good package
+system helps to simply this process and make it reliable.
+
+Packages come in two main flavours: libraries of reusable code, and
+complete programs. Libraries present a code interface, an API, while
+programs can be run directly. In the Haskell world, library packages
+expose a set of Haskell modules as their public interface. Cabal
+packages can contain a library or executables or both.
+
+Some programming languages have packages as a builtin language concept.
+For example in Java, a package provides a local namespace for types and
+other definitions. In the Haskell world, packages are not a part of the
+language itself. Haskell programs consist of a number of modules, and
+packages just provide a way to partition the modules into sets of
+related functionality. Thus the choice of module names in Haskell is
+still important, even when using packages.
+
+### Package names and versions ###
+
+All packages have a name, e.g. "HUnit". Package names are assumed to be
+unique. Cabal package names can use letters, numbers and hyphens, but
+not spaces. The namespace for Cabal packages is flat, not hierarchical.
+
+Packages also have a version, e.g "1.1". This matches the typical way in
+which packages are developed. Strictly speaking, each version of a
+package is independent, but usually they are very similar. Cabal package
+versions follow the conventional numeric style, consisting of a sequence
+of digits such as "1.0.1" or "2.0". There are a range of common
+conventions for "versioning" packages, that is giving some meaning to
+the version number in terms of changes in the package. Section [TODO]
+has some tips on package versioning.
+
+The combination of package name and version is called the _package ID_
+and is written with a hyphen to separate the name and version, e.g.
+"HUnit-1.1". 
+
+For Cabal packages, the combination of the package name and version
+_uniquely_ identifies each package. Or to put it another way: two
+packages with the same name and version are considered to _be_ the same.
+
+Strictly speaking, the package ID only identifies each Cabal _source_
+package; the same Cabal source package can be configured and built in
+different ways. There is a separate installed package ID that uniquely
+identifies each installed package instance. Most of the time however,
+users need not be aware of this detail.
+
+### Kinds of package: Cabal vs GHC vs system ###
+
+It can be slightly confusing at first because there are various
+different notions of package floating around. Fortunately the details
+are not very complicated.
+
+Cabal packages
+:   Cabal packages are really source packages. That is they contain
+    Haskell (and sometimes C) source code.
+    
+    Cabal packages can be compiled to produce GHC packages. They can
+    also be translated into operating system packages.
+
+GHC packages
+:   This is GHC's view on packages. GHC only cares about library
+    packages, not executables. Library packages have to be registered
+    with GHC for them to be available in GHCi or to be used when
+    compiling other programs or packages.
+    
+    The low-level tool `ghc-pkg` is used to register GHC packages and to
+    get information on what packages are currently registered.
+    
+    You never need to make GHC packages manually. When you build and
+    install a Cabal package containing a library then it gets registered
+    with GHC automatically.
+    
+    Haskell implementations other than GHC have essentially the same
+    concept of registered packages. For the most part, Cabal hides the
+    slight differences.
+
+Operating system packages
+:   On operating systems like Linux and Mac OS X, the system has a
+    specific notion of a package and there are tools for installing and
+    managing packages.
+    
+    The Cabal package format is designed to allow Cabal packages to be
+    translated, mostly-automatically, into operating system packages.
+    They are usually translated 1:1, that is a single Cabal package
+    becomes a single system package.
+    
+    It is also possible to make Windows installers from Cabal packages,
+    though this is typically done for a program together with all of its
+    library dependencies, rather than packaging each library separately.
+
+
+### Unit of distribution ###
+
+The Cabal package is the unit of distribution. What this means is that
+each Cabal package can be distributed on its own in source or binary
+form. Of course there may dependencies between packages, but there is
+usually a degree of flexibility in which versions of packages can work
+together so distributing them independently makes sense.
+
+It is perhaps easiest to see what being ``the unit of distribution''
+means by contrast to an alternative approach. Many projects are made up
+of several interdependent packages and during development these might
+all be kept under one common directory tree and be built and tested
+together. When it comes to distribution however, rather than
+distributing them all together in a single tarball, it is required that
+they each be distributed independently in their own tarballs.
+
+Cabal's approach is to say that if you can specify a dependency on a
+package then that package should be able to be distributed
+independently. Or to put it the other way round, if you want to
+distribute it as a single unit, then it should be a single package.
+
+
+### Explicit dependencies and automatic package management ###
+
+Cabal takes the approach that all packages dependencies are specified
+explicitly and specified in a declarative way. The point is to enable
+automatic package management. This means tools like `cabal` can resolve
+dependencies and install a package plus all of its dependencies
+automatically. Alternatively, it is possible to mechanically (or mostly
+mechanically) translate Cabal packages into system packages and let the
+system package managager install dependencies automatically.
+
+It is important to track dependencies accurately so that packages can
+reliably be moved from one system to another system and still be able to
+build it there. Cabal is therefore relatively strict about specifying
+dependencies. For example Cabal's default build system will not even let
+code build if it tries to import a module from a package that isn't
+listed in the `.cabal` file, even if that package is actually installed.
+This helps to ensure that there are no "untracked dependencies" that
+could cause the code to fail to build on some other system.
+
+The explicit dependency approach is in contrast to the traditional
+"./configure" approach where instead of specifying dependencies
+declarativly, the `./configure` script checks if the dependencies are
+present on the system. Some manual work is required to transform a
+`./configure` based package into a Linux distribution package (or
+similar). This conversion work is usually done by people other than the
+package author(s). The practical effect of this is that only the most
+popular packages will benefit from automatic package managment. Instead,
+Cabal forces the original author to specify the dependencies but the
+advantage is that every package can benefit from automatic package
+managment.
+
+The "./configure" approach tends to encourage packages that adapt
+themselves to the environment in which they are built, for example by
+disabling optional features so that they can continue to work when a
+particular dependency is not available. This approach makes sense in a
+world where installing additional dependencies is a tiresome manual
+process and so minimising dependencies is important. The automatic
+package managment view is that packages should just declare what they
+need and the package manager will take responsibility for ensuring that
+all the dependencies are installed.
+
+Sometimes of course optional features and optional dependencies do make
+sense. Cabal packages can have optional features and varying
+dependencies. These conditional dependencies are still specified in a
+declarative way however and remain compatible with automatic package
+management. The need to remain compatible with automatic package
+management means that Cabal's conditional dependencies system is a bit
+less flexible than with the "./configure" approach.
+
+### Portability ###
+
+One of the purposes of Cabal is to make it easier to build packages on
+different platforms (operating systems and CPU architectures), with
+different compiler versions and indeed even with different Haskell
+implementations. (Yes, there are Haskell implementations other than
+GHC!)
+
+Cabal provides abstractions of features present in different Haskell
+implementations and wherever possible it is best to take advantage of
+these to increase portability. Where necessary however it is possible to
+use specific features of specific implementations.
+
+For example a package author can list in the package's `.cabal` what
+language extensions the code uses. This allows Cabal to figure out if
+the language extension is supported by the Haskell implementation that
+the user picks. Additionally, certain language extensions such as
+Template Haskell require special handling from the build system and by
+listing the extension it provides the build system with enough
+information to do the right thing.
+
+Another similar example is linking with foreign libraries. Rather than
+specifying GHC flags directly, the package author can list the libraries
+that are needed and the build system will take care of using the right
+flags for the compiler. Additionally this makes it easier for tools to
+discover what system C libraries a package needs, which is useful for
+tracking dependencies on system libraries (e.g. when translating into
+linux distro packages).
+
+In fact both of these examples fall into the category of explicitly
+specifying dependencies. Not all dependencies are other Cabal packages.
+Foreign libraries are clearly another kind of dependency. It's also
+possible to think of language extensions as dependencies: the package
+depends on a Haskell implementation that supports all those extensions.
+
+Where compiler-specific options are needed however, there is an "escape
+hatch" available. The developer can specify implementation-specific
+options and more generally there is a configuration mechanism to
+customise many aspects of how a package is built depending on the
+Haskell implementation, the operating system, computer architecture and
+user-specified configuration flags.
+
 
 # Developing packages #
 
@@ -37,6 +470,7 @@ program may contain multiple modules with the same name if they come
 from separate packages; in all other current Haskell systems packages
 may not overlap in the modules they provide, including hidden modules.
 
+
 ## Creating a package ##
 
 Suppose you have a directory hierarchy containing the source files that
@@ -55,9 +489,10 @@ _package_`.cabal`
     the interface described in the section on [building and installing
     packages](#building-and-installing-a-package)). This module should
     import only modules that will be present in all Haskell
-    implementations, including modules of the Cabal library.  In most
-    cases it will be trivial, calling on the Cabal library to do most of
-    the work.
+    implementations, including modules of the Cabal library. The
+    content of this file is determined by the `build-type` setting in
+    the `.cabal` file. In most cases it will be trivial, calling on
+    the Cabal library to do most of the work.
 
 Once you have these, you can create a source bundle of this directory
 for distribution. Building of the package is discussed in the section on
@@ -218,8 +653,8 @@ several sections.
   information](#build-information).
 
 * Following is an arbitrary number of executable sections
-  which describe an [executable program](#executable) and relevant
-  [build information](#build-information).
+  which describe an executable program and relevant [build
+  information](#build-information).
 
 Each section consists of a number of property descriptions
 in the form of field/value pairs, with a syntax roughly like mail
@@ -275,8 +710,8 @@ simple build infrastructure understands the extensions:
 When building, Cabal will automatically run the appropriate preprocessor
 and compile the Haskell module it produces.
 
-Some fields take lists of values, which are optionally separated by commas, except for the
-`build-depends` field, where the commas are mandatory.
+Some fields take lists of values, which are optionally separated by commas,
+except for the `build-depends` field, where the commas are mandatory.
 
 Some fields are marked as required.  All others are optional, and unless
 otherwise specified have empty default values.
@@ -287,8 +722,7 @@ These fields may occur in the first top-level properties section and
 describe the package as a whole:
 
 `name:` _package-name_ (required)
-:   The unique name of the [package](#packages), without the version
-    number.
+:   The unique name of the package, without the version number.
 
 `version:` _numbers_ (required)
 :   The package version number, usually consisting of a sequence of
@@ -329,19 +763,55 @@ describe the package as a whole:
 
 `build-type:` _identifier_
 :   The type of build used by this package. Build types are the
-    constructors of the [BuildType][] type, defaulting to `Custom`. If
-    this field is given a value other than `Custom`, some tools such as
-    `cabal-install` will be able to build the package without using the
-    setup script. So if you are just using the default `Setup.hs` then
-    set the build type as `Simple`.
+    constructors of the [BuildType][] type, defaulting to `Custom`.
+
+    If the build type is anything other than `Custom`, then the
+    `Setup.hs` file *must* be exactly the standardized content
+    discussed below. This is because in these cases, `cabal` will
+    ignore the `Setup.hs` file completely, whereas other methods of
+    package management, such as `runhaskell Setup.hs [CMD]`, still
+    rely on the `Setup.hs` file.
+
+    For build type `Simple`, the contents of `Setup.hs` must be:
+
+    ~~~~~~~~~~~~~~~~
+    import Distribution.Simple
+    main = defaultMain
+    ~~~~~~~~~~~~~~~~
+
+    For build type `Configure` (see the section on [system-dependent
+    parameters](#system-dependent-parameters) below), the contents of
+    `Setup.hs` must be:
+
+    ~~~~~~~~~~~~~~~~
+    import Distribution.Simple
+    main = defaultMainWithHooks autoconfUserHooks
+    ~~~~~~~~~~~~~~~~
+
+    For build type `Make` (see the section on [more complex
+    packages](installing-packages.html#more-complex-packages) below),
+    the contents of `Setup.hs` must be:
+
+    ~~~~~~~~~~~~~~~~
+    import Distribution.Make
+    main = defaultMain
+    ~~~~~~~~~~~~~~~~
+
+    For build type `Custom`, the file `Setup.hs` can be customized,
+    and will be used both by `cabal` and other tools.
+
+    For most packages, the build type `Simple` is sufficient.
 
 `license:` _identifier_ (default: `AllRightsReserved`)
 :   The type of license under which this package is distributed.
     License names are the constants of the [License][dist-license] type.
 
-`license-file:` _filename_
-:   The name of a file containing the precise license for this package.
-    It will be installed with the package.
+`license-file:` _filename_ or `license-files:` _filename list_
+:   The name of a file(s) containing the precise copyright license for
+    this package. The license file(s) will be installed with the package.
+
+    If you have multiple license files then use the `license-files`
+    field instead of (or in addition to) the `license-file` field.
 
 `copyright:` _freeform_
 :   The content of a copyright notice, typically the name of the holder
@@ -393,8 +863,8 @@ describe the package as a whole:
     package before.
 
     For library packages, this field is used as prologue text by [`setup
-    haddock`](#setup-haddock), and thus may contain the same markup as
-    [haddock][] documentation comments.
+    haddock`](installing-packages.html#setup-haddock), and thus may
+    contain the same markup as [haddock][] documentation comments.
 
 `category:` _freeform_
 :   A classification category for future use by the package catalogue [Hackage].  These
@@ -437,14 +907,22 @@ describe the package as a whole:
 
 `extra-source-files:` _filename list_
 :   A list of additional files to be included in source distributions
-    built with [`setup sdist`](#setup-sdist). As with `data-files` it
-    can use a limited form of `*` wildcards in file names.
+    built with [`setup sdist`](installing-packages.html#setup-sdist). As
+    with `data-files` it can use a limited form of `*` wildcards in file
+    names.
+
+`extra-doc-files:` _filename list_
+:   A list of additional files to be included in source distributions,
+    and also copied to the html directory when Haddock documentation is
+    generated. As with `data-files` it can use a limited form of `*`
+    wildcards in file names.
 
 `extra-tmp-files:` _filename list_
 :   A list of additional files or directories to be removed by [`setup
-    clean`](#setup-clean). These would typically be additional files
-    created by additional hooks, such as the scheme described in the
-    section on [system-dependent parameters](#system-dependent-parameters).
+    clean`](installing-packages.html#setup-clean). These would typically
+    be additional files created by additional hooks, such as the scheme
+    described in the section on [system-dependent
+    parameters](#system-dependent-parameters).
 
 ### Library ###
 
@@ -470,6 +948,42 @@ The library section should contain the following fields:
 The library section may also contain build information fields (see the
 section on [build information](#build-information)).
 
+#### Opening an interpreter session ####
+
+While developing a package, it is often useful to make its code available inside
+an interpreter session. This can be done with the `repl` command:
+
+~~~~~~~~~~~~~~~~
+cabal repl
+~~~~~~~~~~~~~~~~
+
+The name comes from the acronym [REPL], which stands for
+"read-eval-print-loop". By default `cabal repl` loads the first component in a
+package. If the package contains several named components, the name can be given
+as an argument to `repl`. The name can be also optionally prefixed with the
+component's type for disambiguation purposes. Example:
+
+~~~~~~~~~~~~~~~~
+cabal repl foo
+cabal repl exe:foo
+cabal repl test:bar
+cabal repl bench:baz
+~~~~~~~~~~~~~~~~
+
+#### Freezing dependency versions ####
+
+If a package is built in several different environments, such as a development
+environment, a staging environment and a production environment, it may be
+necessary or desirable to ensure that the same dependency versions are
+selected in each environment. This can be done with the `freeze` command:
+
+~~~~~~~~~~~~~~~~
+cabal freeze
+~~~~~~~~~~~~~~~~
+
+The command writes the selected version for all dependencies to the
+`cabal.config` file.  All environments which share this file will use the
+dependency versions specified in it.
 
 ### Executables ###
 
@@ -487,6 +1001,21 @@ information](#build-information)).
     `.hs` filename that must be listed, even if that file is generated
     using a preprocessor. The source file must be relative to one of the
     directories listed in `hs-source-dirs`.
+
+#### Running executables ####
+
+You can have Cabal build and run your executables by using the `run` command:
+
+~~~~~~~~~~~~~~~~
+$ cabal run EXECUTABLE [-- EXECUTABLE_FLAGS]
+~~~~~~~~~~~~~~~~
+
+This command will configure, build and run the executable `EXECUTABLE`. The
+double dash separator is required to distinguish executable flags from `run`'s
+own flags. If there is only one executable defined in the whole package, the
+executable's name can be omitted. See the output of `cabal help run` for a list
+of options you can pass to `cabal run`.
+
 
 ### Test suites ###
 
@@ -653,8 +1182,8 @@ may provide human-readable information through the standard output and error
 channels.
 
 `main-is:` _filename_ (required: `exitcode-stdio-1.0`)
-:   The name of the `.hs` or `.lhs` file containing the `Main` module. Note that it is the
-    `.hs` filename that must be listed, even if that file is generated
+:   The name of the `.hs` or `.lhs` file containing the `Main` module. Note that
+    it is the `.hs` filename that must be listed, even if that file is generated
     using a preprocessor. The source file must be relative to one of the
     directories listed in `hs-source-dirs`.  This field is analogous to the
     `main-is` field of an executable section.
@@ -1006,12 +1535,12 @@ following fields.
 :   The default value of this flag.
 
     Note that this value may be [overridden in several
-    ways](#controlling-flag-assignments"). The rationale for having
-    flags default to True is that users usually want new features as
-    soon as they are available. Flags representing features that are not
-    (yet) recommended for most users (such as experimental features or
-    debugging support) should therefore explicitly override the default
-    to False.
+    ways](installing-packages.html#controlling-flag-assignments"). The
+    rationale for having flags default to True is that users usually
+    want new features as soon as they are available. Flags representing
+    features that are not (yet) recommended for most users (such as
+    experimental features or debugging support) should therefore
+    explicitly override the default to False.
 
 `manual:` _boolean_ (default: `False`)
 :   By default, Cabal will first try to satisfy dependencies with the
@@ -1272,14 +1801,35 @@ The exact fields are as follows:
     This field is optional. It default to empty which corresponds to the
     root directory of the repository.
 
+### Downloading a package's source ###
+
+The `cabal get` command allows to access a package's source code - either by
+unpacking a tarball downloaded from Hackage (the default) or by checking out a
+working copy from the package's source repository.
+
+~~~~~~~~~~~~~~~~
+$ cabal get [FLAGS] PACKAGES
+~~~~~~~~~~~~~~~~
+
+The `get` command supports the following options:
+
+`-d --destdir` _PATH_
+:   Where to place the package source, defaults to (a subdirectory of) the
+    current directory.
+
+`-s --source-repository` _[head|this|...]_
+:   Fork the package's source repository using the appropriate version control
+    system. The optional argument allows to choose a specific repo kind.
+
+
 ## Accessing data files from package code ##
 
 The placement on the target system of files listed in the `data-files`
 field varies between systems, and in some cases one can even move
 packages around after installation (see [prefix
-independence](#prefix-independence)).  To enable packages to find these
-files in a portable way, Cabal generates a module called
-`Paths_`_pkgname_ (with any hyphens in _pkgname_ replaced by
+independence](installing-packages.html#prefix-independence)). To enable
+packages to find these files in a portable way, Cabal generates a module
+called `Paths_`_pkgname_ (with any hyphens in _pkgname_ replaced by
 underscores) during building, so that it may be imported by modules of
 the package.  This module defines a function
 
@@ -1309,19 +1859,18 @@ field.
 
 For some packages, especially those interfacing with C libraries,
 implementation details and the build procedure depend on the build
-environment.  A variant of the simple build infrastructure (the
-`build-type` `Configure`) handles many such situations using a slightly
-longer `Setup.hs`:
+environment. The `build-type` `Configure` can be used to handle many
+such situations. In this case, `Setup.hs` should be:
 
 ~~~~~~~~~~~~~~~~
 import Distribution.Simple
 main = defaultMainWithHooks autoconfUserHooks
 ~~~~~~~~~~~~~~~~
 
-Most packages, however, would probably do better with
-[configurations](#configurations).
+Most packages, however, would probably do better using the `Simple`
+build type and [configurations](#configurations).
 
-This program differs from `defaultMain` in two ways:
+The `build-type` `Configure` differs from `Simple` in two ways:
 
 * The package root directory must contain a shell script called
   `configure`. The configure step will run the script. This `configure`
@@ -1409,26 +1958,39 @@ cc-options:  -I/usr/X11R6/include
 ld-options:  -L/usr/X11R6/lib
 ~~~~~~~~~~~~~~~~
 
-The `configure` script also generates a header file
-`include/HsX11Config.h` containing C preprocessor defines recording the
-results of various tests.  This file may be included by C source files
-and preprocessed Haskell source files in the package.
+The `configure` script also generates a header file `include/HsX11Config.h`
+containing C preprocessor defines recording the results of various tests.  This
+file may be included by C source files and preprocessed Haskell source files in
+the package.
 
-Note: Packages using these features will also need to list
-additional files such as `configure`,
-templates for `.buildinfo` files, files named
-only in `.buildinfo` files, header files and
-so on in the `extra-source-files` field,
-to ensure that they are included in source distributions.
-They should also list files and directories generated by
-`configure` in the
-`extra-tmp-files` field to ensure that they
-are removed by `setup clean`.
+Note: Packages using these features will also need to list additional files such
+as `configure`, templates for `.buildinfo` files, files named only in
+`.buildinfo` files, header files and so on in the `extra-source-files` field to
+ensure that they are included in source distributions.  They should also list
+files and directories generated by `configure` in the `extra-tmp-files` field to
+ensure that they are removed by `setup clean`.
+
+Quite often the files generated by `configure` need to be listed somewhere in
+the package description (for example, in the `install-includes` field). However,
+we usually don't want generated files to be included in the source tarball. The
+solution is again provided by the `.buildinfo` file. In the above example, the
+following line should be added to `X11.buildinfo`:
+
+~~~~~~~~~~~~~~~~
+install-includes: HsX11Config.h
+~~~~~~~~~~~~~~~~
+
+In this way, the generated `HsX11Config.h` file won't be included in the source
+tarball in addition to `HsX11Config.h.in`, but it will be copied to the right
+location during the install process. Packages that use custom `Setup.hs` scripts
+can update the necessary fields programmatically instead of using the
+`.buildinfo` file.
+
 
 ## Conditional compilation ##
 
 Sometimes you want to write code that works with more than one version
-of a dependency.  You can specify a range of versions for the depenency
+of a dependency.  You can specify a range of versions for the dependency
 in the `build-depends`, but how do you then write the code that can use
 different versions of the API?
 
@@ -1455,28 +2017,49 @@ the actual version of the package in use is greater than or equal to
 lexicographic on the sequence, but numeric on each component, so for
 example 1.2.0 is greater than 1.0.3).
 
+Since version 1.20, there is also the `MIN_TOOL_VERSION_`_`tool`_ family of
+macros for conditioning on the version of build tools used to build the program
+(e.g. `hsc2hs`).
+
 Cabal places the definitions of these macros into an
 automatically-generated header file, which is included when
 preprocessing Haskell source code by passing options to the C
 preprocessor.
+
+Cabal also allows to detect when the source code is being used for generating
+documentation. The `__HADDOCK_VERSION__` macro is defined only when compiling
+via [haddock][] instead of a normal Haskell compiler. The value of the
+`__HADDOCK_VERSION__` macro is defined as `A*1000 + B*10 + C`, where `A.B.C` is
+the Haddock version. This can be useful for working around bugs in Haddock or
+generating prettier documentation in some special cases.
 
 ## More complex packages ##
 
 For packages that don't fit the simple schemes described above, you have
 a few options:
 
-  * You can customize the simple build infrastructure using _hooks_.
-    These allow you to perform additional actions before and after each
-    command is run, and also to specify additional preprocessors.  See
-    `UserHooks` in [Distribution.Simple][dist-simple] for the details,
-    but note that this interface is experimental, and likely to change
-    in future releases.
+  * By using the `build-type` `Custom`, you can supply your own
+    `Setup.hs` file, and customize the simple build infrastructure
+    using _hooks_.  These allow you to perform additional actions
+    before and after each command is run, and also to specify
+    additional preprocessors. A typical `Setup.hs` may look like this:
+
+    ~~~~~~~~~~~~~~~~
+    import Distribution.Simple
+    main = defaultMainWithHooks simpleUserHooks { postHaddock = posthaddock }
+
+    posthaddock args flags desc info = ....
+    ~~~~~~~~~~~~~~~~
+
+    See `UserHooks` in [Distribution.Simple][dist-simple] for the
+    details, but note that this interface is experimental, and likely
+    to change in future releases.
 
   * You could delegate all the work to `make`, though this is unlikely
     to be very portable. Cabal supports this with the `build-type`
     `Make` and a trivial setup library [Distribution.Make][dist-make],
     which simply parses the command line arguments and invokes `make`.
-    Here `Setup.hs` looks like
+    Here `Setup.hs` should look like this:
 
     ~~~~~~~~~~~~~~~~
     import Distribution.Make
@@ -1489,12 +2072,11 @@ a few options:
     `unregister`, `clean`, `dist` and `docs`. Some options to commands
     are passed through as follows:
 
-      * The `--with-hc-pkg`, `--prefix`, `--bindir`, `--libdir`,
-        `--datadir` and `--libexecdir` options to the `configure`
-        command are passed on to the `configure` script. In addition the
-        value of the `--with-compiler` option is passed in a `--with-hc`
-        option and all options specified with `--configure-option=` are
-        passed on.
+      * The `--with-hc-pkg`, `--prefix`, `--bindir`, `--libdir`, `--datadir`,
+        `--libexecdir` and `--sysconfdir` options to the `configure` command are
+        passed on to the `configure` script. In addition the value of the
+        `--with-compiler` option is passed in a `--with-hc` option and all
+        options specified with `--configure-option=` are passed on.
 
       * The `--destdir` option to the `copy` command becomes a setting
         of a `destdir` variable on the invocation of `make copy`. The
@@ -1507,31 +2089,34 @@ a few options:
                                 bindir=$(destdir)/$(bindir) \
                                 libdir=$(destdir)/$(libdir) \
                                 datadir=$(destdir)/$(datadir) \
-                                libexecdir=$(destdir)/$(libexecdir)
+                                libexecdir=$(destdir)/$(libexecdir) \
+                                sysconfdir=$(destdir)/$(sysconfdir) \
         ~~~~~~~~~~~~~~~~
 
-  * You can write your own setup script conforming to the interface
+  * Finally, with the `build-type` `Custom`, you can also write your
+    own setup script from scratch. It must conform to the interface
     described in the section on [building and installing
-    packages](#building-and-installing-a-package), possibly using the
-    Cabal library for part of the work.  One option is to copy the
-    source of `Distribution.Simple`, and alter it for your needs.
-    Good luck.
+    packages](installing-packages.html), and you may use the Cabal
+    library for all or part of the work.  One option is to copy the
+    source of `Distribution.Simple`, and alter it for your needs. Good
+    luck.
 
 
 
-[dist-simple]:  ../libraries/Cabal/Distribution-Simple.html
-[dist-make]:    ../libraries/Cabal/Distribution-Make.html
-[dist-license]: ../libraries/Cabal/Distribution-License.html#t:License
-[extension]:    ../libraries/Cabal/Language-Haskell-Extension.html#t:Extension
-[BuildType]:    ../libraries/Cabal/Distribution-PackageDescription.html#t:BuildType
+[dist-simple]:  ../release/cabal-latest/doc/API/Cabal/Distribution-Simple.html
+[dist-make]:    ../release/cabal-latest/doc/API/Cabal/Distribution-Make.html
+[dist-license]: ../release/cabal-latest/doc/API/Cabal/Distribution-License.html#t:License
+[extension]:    ../release/cabal-latest/doc/API/Cabal/Language-Haskell-Extension.html#t:Extension
+[BuildType]:    ../release/cabal-latest/doc/API/Cabal/Distribution-PackageDescription.html#t:BuildType
 [data-version]: http://hackage.haskell.org/packages/archive/base/latest/doc/html/Data-Version.html
 [alex]:       http://www.haskell.org/alex/
 [autoconf]:   http://www.gnu.org/software/autoconf/
 [c2hs]:       http://www.cse.unsw.edu.au/~chak/haskell/c2hs/
-[cpphs]:      http://www.haskell.org/cpphs/
-[greencard]:  http://www.haskell.org/greencard/
+[cpphs]:      http://projects.haskell.org/cpphs/
+[greencard]:  http://hackage.haskell.org/package/greencard
 [haddock]:    http://www.haskell.org/haddock/
 [HsColour]:   http://www.cs.york.ac.uk/fp/darcs/hscolour/
 [happy]:      http://www.haskell.org/happy/
 [Hackage]:    http://hackage.haskell.org/
-[pkg-config]: http://pkg-config.freedesktop.org/
+[pkg-config]: http://www.freedesktop.org/wiki/Software/pkg-config/
+[REPL]:       http://en.wikipedia.org/wiki/Read%E2%80%93eval%E2%80%93print_loop

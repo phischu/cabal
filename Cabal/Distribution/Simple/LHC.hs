@@ -2,6 +2,7 @@
 -- |
 -- Module      :  Distribution.Simple.LHC
 -- Copyright   :  Isaac Jones 2003-2007
+-- License     :  BSD3
 --
 -- Maintainer  :  cabal-devel@haskell.org
 -- Portability :  portable
@@ -29,37 +30,6 @@
 -- explicitly documented) and thus what search dirs are used for various kinds
 -- of files.
 
-{- Copyright (c) 2003-2005, Isaac Jones
-All rights reserved.
-
-Redistribution and use in source and binary forms, with or without
-modiication, are permitted provided that the following conditions are
-met:
-
-    * Redistributions of source code must retain the above copyright
-      notice, this list of conditions and the following disclaimer.
-
-    * Redistributions in binary form must reproduce the above
-      copyright notice, this list of conditions and the following
-      disclaimer in the documentation and/or other materials provided
-      with the distribution.
-
-    * Neither the name of Isaac Jones nor the names of other
-      contributors may be used to endorse or promote products derived
-      from this software without specific prior written permission.
-
-THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. -}
-
 module Distribution.Simple.LHC (
         configure, getInstalledPackages,
         buildLib, buildExe,
@@ -81,20 +51,22 @@ import Distribution.Simple.PackageIndex
 import qualified Distribution.Simple.PackageIndex as PackageIndex
 import Distribution.ParseUtils  ( ParseResult(..) )
 import Distribution.Simple.LocalBuildInfo
-         ( LocalBuildInfo(..), ComponentLocalBuildInfo(..) )
+         ( LocalBuildInfo(..), ComponentLocalBuildInfo(..),
+           LibraryName(..) )
 import Distribution.Simple.InstallDirs
 import Distribution.Simple.BuildPaths
 import Distribution.Simple.Utils
 import Distribution.Package
-         ( PackageIdentifier, Package(..) )
+         ( Package(..) )
 import qualified Distribution.ModuleName as ModuleName
 import Distribution.Simple.Program
-         ( Program(..), ConfiguredProgram(..), ProgramConfiguration, ProgArg
-         , ProgramLocation(..), rawSystemProgram, rawSystemProgramConf
+         ( Program(..), ConfiguredProgram(..), ProgramConfiguration
+         , ProgramSearchPath, ProgramLocation(..)
+         , rawSystemProgram, rawSystemProgramConf
          , rawSystemProgramStdout, rawSystemProgramStdoutConf
          , requireProgramVersion
          , userMaybeSpecifyPath, programPath, lookupProgram, addKnownProgram
-         , arProgram, ranlibProgram, ldProgram
+         , arProgram, ldProgram
          , gccProgram, stripProgram
          , lhcProgram, lhcPkgProgram )
 import qualified Distribution.Simple.Program.HcPkg as HcPkg
@@ -114,6 +86,7 @@ import Language.Haskell.Extension
 
 import Control.Monad            ( unless, when )
 import Data.List
+import qualified Data.Map as M  ( empty )
 import Data.Maybe               ( catMaybes )
 import Data.Monoid              ( Monoid(..) )
 import System.Directory         ( removeFile, renameFile,
@@ -123,12 +96,13 @@ import System.FilePath          ( (</>), (<.>), takeExtension,
                                   takeDirectory, replaceExtension )
 import System.IO (hClose, hPutStrLn)
 import Distribution.Compat.Exception (catchExit, catchIO)
+import Distribution.System ( Platform )
 
 -- -----------------------------------------------------------------------------
 -- Configuring
 
 configure :: Verbosity -> Maybe FilePath -> Maybe FilePath
-          -> ProgramConfiguration -> IO (Compiler, ProgramConfiguration)
+          -> ProgramConfiguration -> IO (Compiler, Maybe Platform, ProgramConfiguration)
 configure verbosity hcPath hcPkgPath conf = do
 
   (lhcProg, lhcVersion, conf') <-
@@ -152,10 +126,12 @@ configure verbosity hcPath hcPkgPath conf = do
   let comp = Compiler {
         compilerId             = CompilerId LHC lhcVersion,
         compilerLanguages      = languages,
-        compilerExtensions     = extensions
+        compilerExtensions     = extensions,
+        compilerProperties     = M.empty
       }
       conf''' = configureToolchain lhcProg conf'' -- configure gcc and ld
-  return (comp, conf''')
+      compPlatform = Nothing
+  return (comp, compPlatform, conf''')
 
 -- | Adjust the way we find and configure gcc and ld
 --
@@ -178,32 +154,36 @@ configureToolchain lhcProg =
     isWindows   = case buildOS of Windows -> True; _ -> False
 
     -- on Windows finding and configuring ghc's gcc and ld is a bit special
-    findProg :: Program -> FilePath -> Verbosity -> IO (Maybe FilePath)
-    findProg prog location | isWindows = \verbosity -> do
+    findProg :: Program -> FilePath
+             -> Verbosity -> ProgramSearchPath -> IO (Maybe FilePath)
+    findProg prog location | isWindows = \verbosity searchpath -> do
         exists <- doesFileExist location
         if exists then return (Just location)
                   else do warn verbosity ("Couldn't find " ++ programName prog ++ " where I expected it. Trying the search path.")
-                          programFindLocation prog verbosity
+                          programFindLocation prog verbosity searchpath
       | otherwise = programFindLocation prog
 
-    configureGcc :: Verbosity -> ConfiguredProgram -> IO [ProgArg]
+    configureGcc :: Verbosity -> ConfiguredProgram -> IO ConfiguredProgram
     configureGcc
       | isWindows = \_ gccProg -> case programLocation gccProg of
           -- if it's found on system then it means we're using the result
           -- of programFindLocation above rather than a user-supplied path
           -- that means we should add this extra flag to tell ghc's gcc
           -- where it lives and thus where gcc can find its various files:
-          FoundOnSystem {} -> return ["-B" ++ libDir, "-I" ++ includeDir]
-          UserSpecified {} -> return []
-      | otherwise = \_ _   -> return []
+          FoundOnSystem {} -> return gccProg {
+                                programDefaultArgs = ["-B" ++ libDir,
+                                                      "-I" ++ includeDir]
+                              }
+          UserSpecified {} -> return gccProg
+      | otherwise = \_ gccProg -> return gccProg
 
     -- we need to find out if ld supports the -x flag
-    configureLd :: Verbosity -> ConfiguredProgram -> IO [ProgArg]
+    configureLd :: Verbosity -> ConfiguredProgram -> IO ConfiguredProgram
     configureLd verbosity ldProg = do
       tempDir <- getTemporaryDirectory
       ldx <- withTempFile tempDir ".c" $ \testcfile testchnd ->
              withTempFile tempDir ".o" $ \testofile testohnd -> do
-               hPutStrLn testchnd "int foo() {}"
+               hPutStrLn testchnd "int foo() { return 0; }"
                hClose testchnd; hClose testohnd
                rawSystemProgram verbosity lhcProg ["-c", testcfile,
                                                    "-o", testofile]
@@ -216,8 +196,8 @@ configureToolchain lhcProg =
                  `catchIO`   (\_ -> return False)
                  `catchExit` (\_ -> return False)
       if ldx
-        then return ["-x"]
-        else return []
+        then return ldProg { programDefaultArgs = ["-x"] }
+        else return ldProg
 
 getLanguages :: Verbosity -> ConfiguredProgram -> IO [(Language, Flag)]
 getLanguages _ _ = return [(Haskell98, "")]
@@ -332,6 +312,11 @@ substTopDir topDir ipo
 buildLib :: Verbosity -> PackageDescription -> LocalBuildInfo
                       -> Library            -> ComponentLocalBuildInfo -> IO ()
 buildLib verbosity pkg_descr lbi lib clbi = do
+  libName <- case componentLibraries clbi of
+             [libName] -> return libName
+             [] -> die "No library name found when building library"
+             _  -> die "Multiple library names found when building library"
+
   let pref = buildDir lbi
       pkgid = packageId pkg_descr
       runGhcProg = rawSystemProgramConf verbosity lhcProgram (withPrograms lbi)
@@ -348,7 +333,7 @@ buildLib verbosity pkg_descr lbi lib clbi = do
       -- TH always needs vanilla libs, even when building for profiling
 
   createDirectoryIfMissingVerbose verbosity True libTargetDir
-  -- TODO: do we need to put hs-boot files into place for mutually recurive modules?
+  -- TODO: do we need to put hs-boot files into place for mutually recursive modules?
   let ghcArgs =
              ["-package-name", display pkgid ]
           ++ constructGHCCmdLine lbi libBi clbi libTargetDir verbosity
@@ -385,11 +370,11 @@ buildLib verbosity pkg_descr lbi lib clbi = do
   info verbosity "Linking..."
   let cObjs = map (`replaceExtension` objExtension) (cSources libBi)
       cSharedObjs = map (`replaceExtension` ("dyn_" ++ objExtension)) (cSources libBi)
-      vanillaLibFilePath = libTargetDir </> mkLibName pkgid
-      profileLibFilePath = libTargetDir </> mkProfLibName pkgid
-      sharedLibFilePath  = libTargetDir </> mkSharedLibName pkgid
-                                              (compilerId (compiler lbi))
-      ghciLibFilePath    = libTargetDir </> mkGHCiLibName pkgid
+      cid = compilerId (compiler lbi)
+      vanillaLibFilePath = libTargetDir </> mkLibName           libName
+      profileLibFilePath = libTargetDir </> mkProfLibName       libName
+      sharedLibFilePath  = libTargetDir </> mkSharedLibName cid libName
+      ghciLibFilePath    = libTargetDir </> mkGHCiLibName       libName
 
   stubObjs <- fmap catMaybes $ sequence
     [ findFileWithExtension [objExtension] [libTargetDir]
@@ -475,10 +460,10 @@ buildLib verbosity pkg_descr lbi lib clbi = do
 
         runAr = rawSystemProgramConf verbosity arProgram (withPrograms lbi)
 
-         --TODO: discover this at configure time or runtime on unix
-         -- The value is 32k on Windows and posix specifies a minimum of 4k
-         -- but all sensible unixes use more than 4k.
-         -- we could use getSysVar ArgumentLimit but that's in the unix lib
+         --TODO: discover this at configure time or runtime on Unix
+         -- The value is 32k on Windows and POSIX specifies a minimum of 4k
+         -- but all sensible Unixes use more than 4k.
+         -- we could use getSysVar ArgumentLimit but that's in the Unix lib
         maxCommandLineSize = 30 * 1024
 
     ifVanillaLib False $ xargs maxCommandLineSize
@@ -695,8 +680,8 @@ ghcCcOptions lbi bi clbi odir
            _              -> ["-optc-O2"])
      ++ ["-odir", odir]
 
-mkGHCiLibName :: PackageIdentifier -> String
-mkGHCiLibName lib = "HS" ++ display lib <.> "o"
+mkGHCiLibName :: LibraryName -> String
+mkGHCiLibName (LibraryName lib) = lib <.> "o"
 
 -- -----------------------------------------------------------------------------
 -- Installing
@@ -743,12 +728,13 @@ stripExe verbosity lbi name path = when (stripExes lbi) $
 installLib    :: Verbosity
               -> LocalBuildInfo
               -> FilePath  -- ^install location
-              -> FilePath  -- ^install location for dynamic librarys
+              -> FilePath  -- ^install location for dynamic libraries
               -> FilePath  -- ^Build location
               -> PackageDescription
               -> Library
+              -> ComponentLocalBuildInfo
               -> IO ()
-installLib verbosity lbi targetDir dynlibTargetDir builtDir pkg lib = do
+installLib verbosity lbi targetDir dynlibTargetDir builtDir _pkg lib clbi = do
   -- copy .hi files over:
   let copy src dst n = do
         createDirectoryIfMissingVerbose verbosity True dst
@@ -762,24 +748,18 @@ installLib verbosity lbi targetDir dynlibTargetDir builtDir pkg lib = do
   flip mapM_ hcrFiles $ \(srcBase, srcFile) -> runLhc ["--install-library", srcBase </> srcFile]
 
   -- copy the built library files over:
-  ifVanilla $ copy builtDir targetDir vanillaLibName
-  ifProf    $ copy builtDir targetDir profileLibName
-  ifGHCi    $ copy builtDir targetDir ghciLibName
-  ifShared  $ copy builtDir dynlibTargetDir sharedLibName
-
-  -- run ranlib if necessary:
-  ifVanilla $ updateLibArchive verbosity lbi
-                               (targetDir </> vanillaLibName)
-  ifProf    $ updateLibArchive verbosity lbi
-                               (targetDir </> profileLibName)
+  ifVanilla $ mapM_ (copy builtDir targetDir)       vanillaLibNames
+  ifProf    $ mapM_ (copy builtDir targetDir)       profileLibNames
+  ifGHCi    $ mapM_ (copy builtDir targetDir)       ghciLibNames
+  ifShared  $ mapM_ (copy builtDir dynlibTargetDir) sharedLibNames
 
   where
-    vanillaLibName = mkLibName pkgid
-    profileLibName = mkProfLibName pkgid
-    ghciLibName    = mkGHCiLibName pkgid
-    sharedLibName  = mkSharedLibName pkgid (compilerId (compiler lbi))
-
-    pkgid          = packageId pkg
+    cid = compilerId (compiler lbi)
+    libNames = componentLibraries clbi
+    vanillaLibNames = map mkLibName             libNames
+    profileLibNames = map mkProfLibName         libNames
+    ghciLibNames    = map mkGHCiLibName         libNames
+    sharedLibNames  = map (mkSharedLibName cid) libNames
 
     hasLib    = not $ null (libModules lib)
                    && null (cSources (libBuildInfo lib))
@@ -789,20 +769,6 @@ installLib verbosity lbi targetDir dynlibTargetDir builtDir pkg lib = do
     ifShared  = when (hasLib && withSharedLib  lbi)
 
     runLhc    = rawSystemProgramConf verbosity lhcProgram (withPrograms lbi)
-
--- | use @ranlib@ or @ar -s@ to build an index. This is necessary on systems
--- like MacOS X. If we can't find those, don't worry too much about it.
---
-updateLibArchive :: Verbosity -> LocalBuildInfo -> FilePath -> IO ()
-updateLibArchive verbosity lbi path =
-  case lookupProgram ranlibProgram (withPrograms lbi) of
-    Just ranlib -> rawSystemProgram verbosity ranlib [path]
-    Nothing     -> case lookupProgram arProgram (withPrograms lbi) of
-      Just ar   -> rawSystemProgram verbosity ar ["-s", path]
-      Nothing   -> warn verbosity $
-                        "Unable to generate a symbol index for the static "
-                     ++ "library '" ++ path
-                     ++ "' (missing the 'ranlib' and 'ar' programs)"
 
 -- -----------------------------------------------------------------------------
 -- Registering

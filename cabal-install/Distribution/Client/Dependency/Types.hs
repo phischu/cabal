@@ -1,3 +1,4 @@
+{-# LANGUAGE DeriveFunctor #-}
 -----------------------------------------------------------------------------
 -- |
 -- Module      :  Distribution.Client.Dependency.Types
@@ -17,7 +18,9 @@ module Distribution.Client.Dependency.Types (
     Solver(..),
     DependencyResolver,
 
+    AllowNewer(..), isAllowNewer,
     PackageConstraint(..),
+    debugPackageConstraint,
     PackagePreferences(..),
     InstalledPreference(..),
     PackagesPreferenceDefault(..),
@@ -35,7 +38,7 @@ import Data.Monoid
          ( Monoid(..) )
 
 import Distribution.Client.Types
-         ( OptionalStanza, SourcePackage(..) )
+         ( OptionalStanza(..), SourcePackage(..) )
 import qualified Distribution.Client.InstallPlan as InstallPlan
 
 import Distribution.Compat.ReadP
@@ -44,7 +47,7 @@ import Distribution.Compat.ReadP
 import qualified Distribution.Compat.ReadP as Parse
          ( pfail, munch1 )
 import Distribution.PackageDescription
-         ( FlagAssignment )
+         ( FlagAssignment, FlagName(..) )
 import qualified Distribution.Client.PackageIndex as PackageIndex
          ( PackageIndex )
 import qualified Distribution.Simple.PackageIndex as InstalledPackageIndex
@@ -52,13 +55,13 @@ import qualified Distribution.Simple.PackageIndex as InstalledPackageIndex
 import Distribution.Package
          ( Dependency, PackageName, InstalledPackageId )
 import Distribution.Version
-         ( VersionRange )
+         ( VersionRange, simplifyVersionRange )
 import Distribution.Compiler
          ( CompilerId )
 import Distribution.System
          ( Platform )
 import Distribution.Text
-         ( Text(..) )
+         ( Text(..), display )
 
 import Text.PrettyPrint
          ( text )
@@ -126,10 +129,31 @@ data PackageConstraint
    | PackageConstraintStanzas   PackageName [OptionalStanza]
   deriving (Show,Eq)
 
+-- | Provide a textual representation of a package constraint
+-- for debugging purposes.
+--
+debugPackageConstraint :: PackageConstraint -> String
+debugPackageConstraint (PackageConstraintVersion pn vr) =
+  display pn ++ " " ++ display (simplifyVersionRange vr)
+debugPackageConstraint (PackageConstraintInstalled pn) =
+  display pn ++ " installed"
+debugPackageConstraint (PackageConstraintSource pn) =
+  display pn ++ " source"
+debugPackageConstraint (PackageConstraintFlags pn fs) =
+  "flags " ++ display pn ++ " " ++ unwords (map (uncurry showFlag) fs)
+  where
+    showFlag (FlagName f) True  = "+" ++ f
+    showFlag (FlagName f) False = "-" ++ f
+debugPackageConstraint (PackageConstraintStanzas pn ss) =
+  "stanzas " ++ display pn ++ " " ++ unwords (map showStanza ss)
+  where
+    showStanza TestStanzas  = "test"
+    showStanza BenchStanzas = "bench"
+
 -- | A per-package preference on the version. It is a soft constraint that the
 -- 'DependencyResolver' should try to respect where possible. It consists of
 -- a 'InstalledPreference' which says if we prefer versions of packages
--- that are already installed. It also hase a 'PackageVersionPreference' which
+-- that are already installed. It also has a 'PackageVersionPreference' which
 -- is a suggested constraint on the version number. The resolver should try to
 -- use package versions that satisfy the suggested version constraint.
 --
@@ -138,10 +162,11 @@ data PackageConstraint
 --
 data PackagePreferences = PackagePreferences VersionRange InstalledPreference
 
--- | Wether we prefer an installed version of a package or simply the latest
+-- | Whether we prefer an installed version of a package or simply the latest
 -- version.
 --
 data InstalledPreference = PreferInstalled | PreferLatest
+  deriving Show
 
 -- | Global policy for all packages to say if we prefer package versions that
 -- are already installed locally or if we just prefer the latest available.
@@ -166,17 +191,41 @@ data PackagesPreferenceDefault =
      -- * This is the standard policy for install.
      --
    | PreferLatestForSelected
+  deriving Show
+
+-- | Policy for relaxing upper bounds in dependencies. For example, given
+-- 'build-depends: array >= 0.3 && < 0.5', are we allowed to relax the upper
+-- bound and choose a version of 'array' that is greater or equal to 0.5? By
+-- default the upper bounds are always strictly honored.
+data AllowNewer =
+
+  -- | Default: honor the upper bounds in all dependencies, never choose
+  -- versions newer than allowed.
+  AllowNewerNone
+
+  -- | Ignore upper bounds in dependencies on the given packages.
+  | AllowNewerSome [PackageName]
+
+  -- | Ignore upper bounds in dependencies on all packages.
+  | AllowNewerAll
+
+-- | Convert 'AllowNewer' to a boolean.
+isAllowNewer :: AllowNewer -> Bool
+isAllowNewer AllowNewerNone     = False
+isAllowNewer (AllowNewerSome _) = True
+isAllowNewer AllowNewerAll      = True
 
 -- | A type to represent the unfolding of an expensive long running
 -- calculation that may fail. We may get intermediate steps before the final
--- retult which may be used to indicate progress and\/or logging messages.
+-- result which may be used to indicate progress and\/or logging messages.
 --
 data Progress step fail done = Step step (Progress step fail done)
                              | Fail fail
                              | Done done
+  deriving Functor
 
--- | Consume a 'Progres' calculation. Much like 'foldr' for lists but with
--- two base cases, one for a final result and one for failure.
+-- | Consume a 'Progress' calculation. Much like 'foldr' for lists but with two
+-- base cases, one for a final result and one for failure.
 --
 -- Eg to convert into a simple 'Either' result use:
 --
@@ -188,9 +237,6 @@ foldProgress step fail done = fold
   where fold (Step s p) = step s (fold p)
         fold (Fail f)   = fail f
         fold (Done r)   = done r
-
-instance Functor (Progress step fail) where
-  fmap f = foldProgress Step Fail (Done . f)
 
 instance Monad (Progress step fail) where
   return a = Done a

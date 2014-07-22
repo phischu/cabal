@@ -2,6 +2,7 @@
 -- |
 -- Module      :  Distribution.Simple.Hpc
 -- Copyright   :  Thomas Tuegel 2011
+-- License     :  BSD3
 --
 -- Maintainer  :  cabal-devel@haskell.org
 -- Portability :  portable
@@ -9,36 +10,6 @@
 -- This module provides functions for locating various HPC-related paths and
 -- a function for adding the necessary options to a PackageDescription to
 -- build test suites with HPC enabled.
-
-{- All rights reserved.
-
-Redistribution and use in source and binary forms, with or without
-modification, are permitted provided that the following conditions are
-met:
-
-    * Redistributions of source code must retain the above copyright
-      notice, this list of conditions and the following disclaimer.
-
-    * Redistributions in binary form must reproduce the above
-      copyright notice, this list of conditions and the following
-      disclaimer in the documentation and/or other materials provided
-      with the distribution.
-
-    * Neither the name of Isaac Jones nor the names of other
-      contributors may be used to endorse or promote products derived
-      from this software without specific prior written permission.
-
-THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. -}
 
 module Distribution.Simple.Hpc
     ( enableCoverage
@@ -60,9 +31,13 @@ import Distribution.PackageDescription
     , testModules
     )
 import Distribution.Simple.LocalBuildInfo ( LocalBuildInfo(..) )
-import Distribution.Simple.Program ( hpcProgram, requireProgram )
+import Distribution.Simple.Program
+    ( hpcProgram
+    , requireProgramVersion
+    )
 import Distribution.Simple.Program.Hpc ( markup, union )
 import Distribution.Simple.Utils ( notice )
+import Distribution.Version ( anyVersion )
 import Distribution.Text
 import Distribution.Verbosity ( Verbosity() )
 import System.Directory ( createDirectoryIfMissing, doesFileExist )
@@ -138,14 +113,19 @@ markupTest :: Verbosity
 markupTest verbosity lbi distPref libName suite = do
     tixFileExists <- doesFileExist $ tixFilePath distPref $ testName suite
     when tixFileExists $ do
-        (hpc, _) <- requireProgram verbosity hpcProgram $ withPrograms lbi
-        markup hpc verbosity (tixFilePath distPref $ testName suite)
-                             (mixDir distPref libName)
-                             (htmlDir distPref $ testName suite)
-                             (testModules suite ++ [ main ])
+        -- behaviour of 'markup' depends on version, so we need *a* version
+        -- but no particular one
+        (hpc, hpcVer, _) <- requireProgramVersion verbosity
+            hpcProgram anyVersion (withPrograms lbi)
+        markup hpc hpcVer verbosity
+            (tixFilePath distPref $ testName suite) mixDirs
+            (htmlDir distPref $ testName suite)
+            (testModules suite ++ [ main ])
         notice verbosity $ "Test coverage report written to "
                             ++ htmlDir distPref (testName suite)
                             </> "hpc_index" <.> "html"
+  where
+    mixDirs = map (mixDir distPref) [ testName suite, libName ]
 
 -- | Generate the HTML markup for all of a package's test suites.
 markupPackage :: Verbosity
@@ -158,13 +138,17 @@ markupPackage verbosity lbi distPref libName suites = do
     let tixFiles = map (tixFilePath distPref . testName) suites
     tixFilesExist <- mapM doesFileExist tixFiles
     when (and tixFilesExist) $ do
-        (hpc, _) <- requireProgram verbosity hpcProgram $ withPrograms lbi
+        -- behaviour of 'markup' depends on version, so we need *a* version
+        -- but no particular one
+        (hpc, hpcVer, _) <- requireProgramVersion verbosity
+            hpcProgram anyVersion (withPrograms lbi)
         let outFile = tixFilePath distPref libName
-            mixDir' = mixDir distPref libName
             htmlDir' = htmlDir distPref libName
             excluded = concatMap testModules suites ++ [ main ]
         createDirectoryIfMissing True $ takeDirectory outFile
         union hpc verbosity tixFiles outFile excluded
-        markup hpc verbosity outFile mixDir' htmlDir' excluded
+        markup hpc hpcVer verbosity outFile mixDirs htmlDir' excluded
         notice verbosity $ "Package coverage report written to "
                            ++ htmlDir' </> "hpc_index.html"
+  where
+    mixDirs = map (mixDir distPref) $ libName : map testName suites

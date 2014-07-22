@@ -66,9 +66,9 @@ combine :: Var QPN -> [(a, (Maybe (ConflictSet QPN), b))] ->
 combine _   []                      c = (Just c, [])
 combine var ((k, (     d, v)) : xs) c = (\ ~(e, ys) -> (e, (k, v) : ys)) $
                                         case d of
-                                          Just e | not (var `S.member` e) -> (Just e, [])
-                                                 | otherwise              -> combine var xs (e `S.union` c)
-                                          Nothing                         -> (Nothing, snd $ combine var xs S.empty)
+                                          Just e | not (simplifyVar var `S.member` e) -> (Just e, [])
+                                                 | otherwise                          -> combine var xs (e `S.union` c)
+                                          Nothing                                     -> (Nothing, snd $ combine var xs S.empty)
 
 -- | Naive backtracking exploration of the search tree. This will yield correct
 -- assignments only once the tree itself is validated.
@@ -80,24 +80,25 @@ explore = cata go
     go (PChoiceF qpn _     ts) (A pa fa sa)   =
       asum $                                      -- try children in order,
       P.mapWithKey                                -- when descending ...
-        (\ k r -> r (A (M.insert qpn k pa) fa sa)) $ -- record the pkg choice
+        (\ k r -> r (A (M.insert qpn k pa) fa sa)) -- record the pkg choice
       ts
     go (FChoiceF qfn _ _ _ ts) (A pa fa sa)   =
       asum $                                      -- try children in order,
       P.mapWithKey                                -- when descending ...
-        (\ k r -> r (A pa (M.insert qfn k fa) sa)) $ -- record the flag choice
+        (\ k r -> r (A pa (M.insert qfn k fa) sa)) -- record the flag choice
       ts
     go (SChoiceF qsn _ _   ts) (A pa fa sa)   =
       asum $                                      -- try children in order,
       P.mapWithKey                                -- when descending ...
-        (\ k r -> r (A pa fa (M.insert qsn k sa))) $ -- record the flag choice
+        (\ k r -> r (A pa fa (M.insert qsn k sa))) -- record the flag choice
       ts
     go (GoalChoiceF        ts) a              =
       casePSQ ts A.empty                      -- empty goal choice is an internal error
         (\ _k v _xs -> v a)                   -- commit to the first goal choice
 
 -- | Version of 'explore' that returns a 'Log'.
-exploreLog :: Tree (Maybe (ConflictSet QPN)) -> (Assignment -> Log Message (Assignment, RevDepMap))
+exploreLog :: Tree (Maybe (ConflictSet QPN)) ->
+              (Assignment -> Log Message (Assignment, RevDepMap))
 exploreLog = cata go
   where
     go (FailF c fr)          _           = failWith (Failure c fr)

@@ -2,6 +2,7 @@
 -- |
 -- Module      :  Distribution.PackageDescription.Check
 -- Copyright   :  Lennart Kolmodin 2008
+-- License     :  BSD3
 --
 -- Maintainer  :  cabal-devel@haskell.org
 -- Portability :  portable
@@ -14,40 +15,10 @@
 -- different kinds of check so we can see which ones are appropriate to report
 -- in different situations. This code gets uses when configuring a package when
 -- we consider only basic problems. The higher standard is uses when when
--- preparing a source tarball and by hackage when uploading new packages. The
+-- preparing a source tarball and by Hackage when uploading new packages. The
 -- reason for this is that we want to hold packages that are expected to be
 -- distributed to a higher standard than packages that are only ever expected
 -- to be used on the author's own environment.
-
-{- All rights reserved.
-
-Redistribution and use in source and binary forms, with or without
-modification, are permitted provided that the following conditions are
-met:
-
-    * Redistributions of source code must retain the above copyright
-      notice, this list of conditions and the following disclaimer.
-
-    * Redistributions in binary form must reproduce the above
-      copyright notice, this list of conditions and the following
-      disclaimer in the documentation and/or other materials provided
-      with the distribution.
-
-    * Neither the name of Isaac Jones nor the names of other
-      contributors may be used to endorse or promote products derived
-      from this software without specific prior written permission.
-
-THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. -}
 
 module Distribution.PackageDescription.Check (
         -- * Package Checking
@@ -70,7 +41,6 @@ import Control.Monad
 import qualified System.Directory as System
          ( doesFileExist, doesDirectoryExist )
 
-import Distribution.Package ( pkgName )
 import Distribution.PackageDescription
 import Distribution.PackageDescription.Configuration
          ( flattenPackageDescription, finalizePackageDescription )
@@ -80,6 +50,8 @@ import Distribution.System
          ( OS(..), Arch(..), buildPlatform )
 import Distribution.License
          ( License(..), knownLicenses )
+import Distribution.Simple.CCompiler
+         ( filenameCDialect )
 import Distribution.Simple.Utils
          ( cabalVersion, intercalate, parseFileGlob, FileGlob(..), lowercase )
 
@@ -92,7 +64,7 @@ import Distribution.Version
          , asVersionIntervals, UpperBound(..), isNoVersion )
 import Distribution.Package
          ( PackageName(PackageName), packageName, packageVersion
-         , Dependency(..) )
+         , Dependency(..), pkgName )
 
 import Distribution.Text
          ( display, disp )
@@ -127,17 +99,18 @@ data PackageCheck =
      | PackageBuildWarning { explanation :: String }
 
        -- | An issue that might not be a problem for the package author but
-       -- might be annoying or determental when the package is distributed to
+       -- might be annoying or detrimental when the package is distributed to
        -- users. We should encourage distributed packages to be free from these
        -- issues, but occasionally there are justifiable reasons so we cannot
        -- ban them entirely.
      | PackageDistSuspicious { explanation :: String }
 
-       -- | An issue that is ok in the author's environment but is almost
+       -- | An issue that is OK in the author's environment but is almost
        -- certain to be a portability problem for other environments. We can
        -- quite legitimately refuse to publicly distribute packages with these
        -- problems.
      | PackageDistInexcusable { explanation :: String }
+  deriving (Eq)
 
 instance Show PackageCheck where
     show notice = explanation notice
@@ -146,13 +119,19 @@ check :: Bool -> PackageCheck -> Maybe PackageCheck
 check False _  = Nothing
 check True  pc = Just pc
 
+checkSpecVersion :: PackageDescription -> [Int] -> Bool -> PackageCheck -> Maybe PackageCheck
+checkSpecVersion pkg specver cond pc
+  | specVersion pkg >= Version specver [] = Nothing
+  | otherwise                             = check cond pc
+
+
 -- ------------------------------------------------------------
 -- * Standard checks
 -- ------------------------------------------------------------
 
 -- | Check for common mistakes and problems in package descriptions.
 --
--- This is the standard collection of checks covering all apsects except
+-- This is the standard collection of checks covering all aspects except
 -- for checks that require looking at files within the package. For those
 -- see 'checkPackageFiles'.
 --
@@ -171,7 +150,7 @@ checkPackage gpkg mpkg =
     pkg = fromMaybe (flattenPackageDescription gpkg) mpkg
 
 --TODO: make this variant go away
---      we should alwaws know the GenericPackageDescription
+--      we should always know the GenericPackageDescription
 checkConfiguredPackage :: PackageDescription -> [PackageCheck]
 checkConfiguredPackage pkg =
     checkSanity pkg
@@ -212,10 +191,10 @@ checkSanity pkg =
   ]
   --TODO: check for name clashes case insensitively: windows file systems cannot cope.
 
-  ++ maybe []  checkLibrary    (library pkg)
-  ++ concatMap checkExecutable (executables pkg)
-  ++ concatMap (checkTestSuite pkg) (testSuites pkg)
-  ++ concatMap (checkBenchmark pkg) (benchmarks pkg)
+  ++ maybe []  (checkLibrary    pkg) (library pkg)
+  ++ concatMap (checkExecutable pkg) (executables pkg)
+  ++ concatMap (checkTestSuite  pkg) (testSuites pkg)
+  ++ concatMap (checkBenchmark  pkg) (benchmarks pkg)
 
   ++ catMaybes [
 
@@ -231,12 +210,12 @@ checkSanity pkg =
     bmNames = map benchmarkName $ benchmarks pkg
     duplicateNames = dups $ exeNames ++ testNames ++ bmNames
 
-checkLibrary :: Library -> [PackageCheck]
-checkLibrary lib =
+checkLibrary :: PackageDescription -> Library -> [PackageCheck]
+checkLibrary _pkg lib =
   catMaybes [
 
     check (not (null moduleDuplicates)) $
-       PackageBuildWarning $
+       PackageBuildImpossible $
             "Duplicate modules in library: "
          ++ commaSep (map display moduleDuplicates)
   ]
@@ -244,22 +223,30 @@ checkLibrary lib =
   where
     moduleDuplicates = dups (libModules lib)
 
-checkExecutable :: Executable -> [PackageCheck]
-checkExecutable exe =
+checkExecutable :: PackageDescription -> Executable -> [PackageCheck]
+checkExecutable pkg exe =
   catMaybes [
 
     check (null (modulePath exe)) $
       PackageBuildImpossible $
-        "No 'Main-Is' field found for executable " ++ exeName exe
+        "No 'main-is' field found for executable " ++ exeName exe
 
   , check (not (null (modulePath exe))
-       && takeExtension (modulePath exe) `notElem` [".hs", ".lhs"]) $
+       && (not $ fileExtensionSupportedLanguage $ modulePath exe)) $
       PackageBuildImpossible $
-           "The 'Main-Is' field must specify a '.hs' or '.lhs' file "
-        ++ "(even if it is generated by a preprocessor)."
+           "The 'main-is' field must specify a '.hs' or '.lhs' file "
+        ++ "(even if it is generated by a preprocessor), "
+        ++ "or it may specify a C/C++/obj-C source file."
+
+  , checkSpecVersion pkg [1,17]
+          (fileExtensionSupportedLanguage (modulePath exe)
+        && takeExtension (modulePath exe) `notElem` [".hs", ".lhs"]) $
+      PackageDistInexcusable $
+           "The package uses a C/C++/obj-C source file for the 'main-is' field. "
+        ++ "To use this feature you must specify 'cabal-version: >= 1.18'."
 
   , check (not (null moduleDuplicates)) $
-       PackageBuildWarning $
+       PackageBuildImpossible $
             "Duplicate modules in executable '" ++ exeName exe ++ "': "
          ++ commaSep (map display moduleDuplicates)
   ]
@@ -285,14 +272,20 @@ checkTestSuite pkg test =
       _ -> Nothing
 
   , check (not $ null moduleDuplicates) $
-      PackageBuildWarning $
+      PackageBuildImpossible $
            "Duplicate modules in test suite '" ++ testName test ++ "': "
         ++ commaSep (map display moduleDuplicates)
 
   , check mainIsWrongExt $
       PackageBuildImpossible $
            "The 'main-is' field must specify a '.hs' or '.lhs' file "
-        ++ "(even if it is generated by a preprocessor)."
+        ++ "(even if it is generated by a preprocessor), "
+        ++ "or it may specify a C/C++/obj-C source file."
+
+  , checkSpecVersion pkg [1,17] (mainIsNotHsExt && not mainIsWrongExt) $
+      PackageDistInexcusable $
+           "The package uses a C/C++/obj-C source file for the 'main-is' field. "
+        ++ "To use this feature you must specify 'cabal-version: >= 1.18'."
 
     -- Test suites might be built as (internal) libraries named after
     -- the test suite and thus their names must not clash with the
@@ -306,6 +299,10 @@ checkTestSuite pkg test =
     moduleDuplicates = dups $ testModules test
 
     mainIsWrongExt = case testInterface test of
+      TestSuiteExeV10 _ f -> not $ fileExtensionSupportedLanguage f
+      _                   -> False
+
+    mainIsNotHsExt = case testInterface test of
       TestSuiteExeV10 _ f -> takeExtension f `notElem` [".hs", ".lhs"]
       _                   -> False
 
@@ -333,7 +330,7 @@ checkBenchmark pkg bm =
       _ -> Nothing
 
   , check (not $ null moduleDuplicates) $
-      PackageBuildWarning $
+      PackageBuildImpossible $
            "Duplicate modules in benchmark '" ++ benchmarkName bm ++ "': "
         ++ commaSep (map display moduleDuplicates)
 
@@ -412,7 +409,7 @@ checkFields pkg =
       PackageDistSuspicious $
            "Deprecated extensions: "
         ++ commaSep (map (quote . display . fst) deprecatedExtensions)
-        ++ ". " ++ intercalate " "
+        ++ ". " ++ unwords
              [ "Instead of '" ++ display ext
             ++ "' use '" ++ display replacement ++ "'."
              | (ext, Just replacement) <- deprecatedExtensions ]
@@ -424,7 +421,7 @@ checkFields pkg =
       PackageDistSuspicious "No 'maintainer' field."
 
   , check (null (synopsis pkg) && null (description pkg)) $
-      PackageDistInexcusable $ "No 'synopsis' or 'description' field."
+      PackageDistInexcusable "No 'synopsis' or 'description' field."
 
   , check (null (description pkg) && not (null (synopsis pkg))) $
       PackageDistSuspicious "No 'description' field."
@@ -432,7 +429,7 @@ checkFields pkg =
   , check (null (synopsis pkg) && not (null (description pkg))) $
       PackageDistSuspicious "No 'synopsis' field."
 
-    --TODO: recommend the bug reports url, author and homepage fields
+    --TODO: recommend the bug reports URL, author and homepage fields
     --TODO: recommend not using the stability field
     --TODO: recommend specifying a source repo
 
@@ -507,7 +504,7 @@ checkLicense pkg =
   , check (license pkg `notElem` [AllRightsReserved, PublicDomain]
            -- AllRightsReserved and PublicDomain are not strictly
            -- licenses so don't need license files.
-        && null (licenseFile pkg)) $
+        && null (licenseFiles pkg)) $
       PackageDistSuspicious "A 'license-file' is not specified."
   ]
   where
@@ -517,6 +514,9 @@ checkLicense pkg =
     unknownLicenseVersion (LGPL (Just v))
       | v `notElem` knownVersions = Just knownVersions
       where knownVersions = [ v' | LGPL (Just v') <- knownLicenses ]
+    unknownLicenseVersion (AGPL (Just v))
+      | v `notElem` knownVersions = Just knownVersions
+      where knownVersions = [ v' | AGPL (Just v') <- knownLicenses ]
     unknownLicenseVersion (Apache  (Just v))
       | v `notElem` knownVersions = Just knownVersions
       where knownVersions = [ v' | Apache  (Just v') <- knownLicenses ]
@@ -532,19 +532,19 @@ checkSourceRepos pkg =
                    ++ "The repo kind is usually 'head' or 'this'"
       _ -> Nothing
 
-  , check (repoType repo == Nothing) $
+  , check (isNothing (repoType repo)) $
       PackageDistInexcusable
         "The source-repository 'type' is a required field."
 
-  , check (repoLocation repo == Nothing) $
+  , check (isNothing (repoLocation repo)) $
       PackageDistInexcusable
         "The source-repository 'location' is a required field."
 
-  , check (repoType repo == Just CVS && repoModule repo == Nothing) $
+  , check (repoType repo == Just CVS && isNothing (repoModule repo)) $
       PackageDistInexcusable
         "For a CVS source-repository, the 'module' is a required field."
 
-  , check (repoKind repo == RepoThis && repoTag repo == Nothing) $
+  , check (repoKind repo == RepoThis && isNothing (repoTag repo)) $
       PackageDistInexcusable $
            "For the 'this' kind of source-repository, the 'tag' is a required "
         ++ "field. It should specify the tag corresponding to this version "
@@ -594,8 +594,9 @@ checkGhcOptions pkg =
   , checkFlags ["-fhpc"] $
       PackageDistInexcusable $
         "'ghc-options: -fhpc' is not appropriate for a distributed package."
-
-  , check (any ("-d" `isPrefixOf`) all_ghc_options) $
+    
+    -- -dynamic is not a debug flag
+  , check (any (\opt -> "-d" `isPrefixOf` opt && opt /= "-dynamic") all_ghc_options) $
       PackageDistInexcusable $
         "'ghc-options: -d*' debug flags are not appropriate for a distributed package."
 
@@ -825,6 +826,7 @@ checkPaths pkg =
     relPaths =
          [ (path, "extra-src-files") | path <- extraSrcFiles pkg ]
       ++ [ (path, "extra-tmp-files") | path <- extraTmpFiles pkg ]
+      ++ [ (path, "extra-doc-files") | path <- extraDocFiles pkg ]
       ++ [ (path, "data-files")      | path <- dataFiles     pkg ]
       ++ [ (path, "data-dir")        | path <- [dataDir      pkg]]
       ++ concat
@@ -839,7 +841,7 @@ checkPaths pkg =
         ++ [ (path, "extra-lib-dirs")   | path <- extraLibDirs    bi ]
       | bi <- allBuildInfo pkg ]
 
---TODO: check sets of paths that would be interpreted differently between unix
+--TODO: check sets of paths that would be interpreted differently between Unix
 -- and windows, ie case-sensitive or insensitive. Things that might clash, or
 -- conversely be distinguished.
 
@@ -935,7 +937,7 @@ checkCabalVersion pkg =
            "The package uses wildcard syntax in the 'build-depends' field: "
         ++ commaSep (map display depsUsingWildcardSyntax)
         ++ ". To use this new syntax the package need to specify at least "
-        ++ "'cabal-version: >= 1.6'. Alternatively, if broader compatability "
+        ++ "'cabal-version: >= 1.6'. Alternatively, if broader compatibility "
         ++ "is important then use: " ++ commaSep
            [ display (Dependency name (eliminateWildcardSyntax versionRange))
            | Dependency name versionRange <- depsUsingWildcardSyntax ]
@@ -955,7 +957,7 @@ checkCabalVersion pkg =
            "The package uses wildcard syntax in the 'tested-with' field: "
         ++ commaSep (map display testedWithUsingWildcardSyntax)
         ++ ". To use this new syntax the package need to specify at least "
-        ++ "'cabal-version: >= 1.6'. Alternatively, if broader compatability "
+        ++ "'cabal-version: >= 1.6'. Alternatively, if broader compatibility "
         ++ "is important then use: " ++ commaSep
            [ display (Dependency name (eliminateWildcardSyntax versionRange))
            | Dependency name versionRange <- testedWithUsingWildcardSyntax ]
@@ -966,7 +968,7 @@ checkCabalVersion pkg =
            "Using wildcards like "
         ++ commaSep (map quote $ take 3 dataFilesUsingGlobSyntax)
         ++ " in the 'data-files' field requires 'cabal-version: >= 1.6'. "
-        ++ "Alternatively if you require compatability with earlier Cabal "
+        ++ "Alternatively if you require compatibility with earlier Cabal "
         ++ "versions then list all the files explicitly."
 
     -- check use of "extra-source-files: mk/*.in" syntax
@@ -976,7 +978,7 @@ checkCabalVersion pkg =
         ++ commaSep (map quote $ take 3 extraSrcFilesUsingGlobSyntax)
         ++ " in the 'extra-source-files' field requires "
         ++ "'cabal-version: >= 1.6'. Alternatively if you require "
-        ++ "compatability with earlier Cabal versions then list all the files "
+        ++ "compatibility with earlier Cabal versions then list all the files "
         ++ "explicitly."
 
     -- check use of "source-repository" section
@@ -992,7 +994,7 @@ checkCabalVersion pkg =
            "Unfortunately the license " ++ quote (display (license pkg))
         ++ " messes up the parser in earlier Cabal versions so you need to "
         ++ "specify 'cabal-version: >= 1.4'. Alternatively if you require "
-        ++ "compatability with earlier Cabal versions then use 'OtherLicense'."
+        ++ "compatibility with earlier Cabal versions then use 'OtherLicense'."
 
     -- check for new language extensions
   , checkVersion [1,2,3] (not (null mentionedExtensionsThatNeedCabal12)) $
@@ -1001,7 +1003,7 @@ checkCabalVersion pkg =
         ++ commaSep (map (quote . display) mentionedExtensionsThatNeedCabal12)
         ++ " break the parser in earlier Cabal versions so you need to "
         ++ "specify 'cabal-version: >= 1.2.3'. Alternatively if you require "
-        ++ "compatability with earlier Cabal versions then you may be able to "
+        ++ "compatibility with earlier Cabal versions then you may be able to "
         ++ "use an equivalent compiler-specific flag."
 
   , checkVersion [1,4] (not (null mentionedExtensionsThatNeedCabal14)) $
@@ -1010,7 +1012,7 @@ checkCabalVersion pkg =
         ++ commaSep (map (quote . display) mentionedExtensionsThatNeedCabal14)
         ++ " break the parser in earlier Cabal versions so you need to "
         ++ "specify 'cabal-version: >= 1.4'. Alternatively if you require "
-        ++ "compatability with earlier Cabal versions then you may be able to "
+        ++ "compatibility with earlier Cabal versions then you may be able to "
         ++ "use an equivalent compiler-specific flag."
   ]
   where
@@ -1092,7 +1094,7 @@ checkCabalVersion pkg =
         (\v v' -> intersectVersionRanges (orLaterVersion v) (earlierVersion v'))
         intersectVersionRanges unionVersionRanges id
 
-    compatLicenses = [ GPL Nothing, LGPL Nothing, BSD3, BSD4
+    compatLicenses = [ GPL Nothing, LGPL Nothing, AGPL Nothing, BSD3, BSD4
                      , PublicDomain, AllRightsReserved, OtherLicense ]
 
     mentionedExtensions = [ ext | bi <- allBuildInfo pkg
@@ -1138,7 +1140,7 @@ checkCabalVersion pkg =
 
 -- | A variation on the normal 'Text' instance, shows any ()'s in the original
 -- textual syntax. We need to show these otherwise it's confusing to users when
--- we complain of their presense but do not pretty print them!
+-- we complain of their presence but do not pretty print them!
 --
 displayRawVersionRange :: VersionRange -> String
 displayRawVersionRange =
@@ -1199,7 +1201,7 @@ checkPackageVersions pkg =
   ]
   where
     -- TODO: What we really want to do is test if there exists any
-    -- configuration in which the base version is unboudned above.
+    -- configuration in which the base version is unbounded above.
     -- However that's a bit tricky because there are many possible
     -- configurations. As a cheap easy and safe approximation we will
     -- pick a single "typical" configuration and check if that has an
@@ -1268,7 +1270,7 @@ checkConditionals pkg =
 -- ------------------------------------------------------------
 
 -- | Sanity check things that requires IO. It looks at the files in the
--- package and expects to find the package unpacked in at the given filepath.
+-- package and expects to find the package unpacked in at the given file path.
 --
 checkPackageFiles :: PackageDescription -> FilePath -> IO [PackageCheck]
 checkPackageFiles pkg root = checkPackageContent checkFilesIO pkg
@@ -1298,30 +1300,30 @@ checkPackageContent :: Monad m => CheckPackageContentOps m
                     -> PackageDescription
                     -> m [PackageCheck]
 checkPackageContent ops pkg = do
-  licenseError    <- checkLicenseExists   ops pkg
+  licenseErrors   <- checkLicensesExist   ops pkg
   setupError      <- checkSetupExists     ops pkg
   configureError  <- checkConfigureExists ops pkg
   localPathErrors <- checkLocalPathsExist ops pkg
   vcsLocation     <- checkMissingVcsInfo  ops pkg
 
-  return $ catMaybes [licenseError, setupError, configureError]
+  return $ licenseErrors
+        ++ catMaybes [setupError, configureError]
         ++ localPathErrors
         ++ vcsLocation
 
-checkLicenseExists :: Monad m => CheckPackageContentOps m
+checkLicensesExist :: Monad m => CheckPackageContentOps m
                    -> PackageDescription
-                   -> m (Maybe PackageCheck)
-checkLicenseExists ops pkg
-  | null (licenseFile pkg) = return Nothing
-  | otherwise = do
-    exists <- doesFileExist ops file
-    return $ check (not exists) $
-      PackageBuildWarning $
-           "The 'license-file' field refers to the file " ++ quote file
-        ++ " which does not exist."
-
+                   -> m [PackageCheck]
+checkLicensesExist ops pkg = do
+    exists <- mapM (doesFileExist ops) (licenseFiles pkg)
+    return
+      [ PackageBuildWarning $
+           "The '" ++ fieldname ++ "' field refers to the file "
+        ++ quote file ++ " which does not exist."
+      | (file, False) <- zip (licenseFiles pkg) exists ]
   where
-    file = licenseFile pkg
+    fieldname | length (licenseFiles pkg) == 1 = "license-file"
+              | otherwise                      = "license-files"
 
 checkSetupExists :: Monad m => CheckPackageContentOps m
                  -> PackageDescription
@@ -1493,3 +1495,11 @@ commaSep = intercalate ", "
 
 dups :: Ord a => [a] -> [a]
 dups xs = [ x | (x:_:_) <- group (sort xs) ]
+
+fileExtensionSupportedLanguage :: FilePath -> Bool
+fileExtensionSupportedLanguage path =
+    isHaskell || isC
+  where
+    extension = takeExtension path
+    isHaskell = extension `elem` [".hs", ".lhs"]
+    isC       = isJust (filenameCDialect extension)

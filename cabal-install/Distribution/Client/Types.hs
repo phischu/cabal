@@ -1,3 +1,4 @@
+{-# LANGUAGE DeriveFunctor #-}
 -----------------------------------------------------------------------------
 -- |
 -- Module      :  Distribution.Client.Types
@@ -30,7 +31,8 @@ import Distribution.Version
 
 import Data.Map (Map)
 import Network.URI (URI)
-import Distribution.Compat.Exception
+import Data.ByteString.Lazy (ByteString)
+import Control.Exception
          ( SomeException )
 
 newtype Username = Username { unUsername :: String }
@@ -90,15 +92,41 @@ instance Package ConfiguredPackage where
 instance PackageFixedDeps ConfiguredPackage where
   depends (ConfiguredPackage _ _ _ deps _) = deps
 
+-- | Like 'ConfiguredPackage', but with all dependencies guaranteed to be
+-- installed already, hence itself ready to be installed.
+data ReadyPackage = ReadyPackage
+       SourcePackage           -- see 'ConfiguredPackage'.
+       FlagAssignment          --
+       [OptionalStanza]        --
+       [InstalledPackageInfo]  -- Installed dependencies.
+  deriving Show
+
+instance Package ReadyPackage where
+  packageId (ReadyPackage pkg _ _ _) = packageId pkg
+
+instance PackageFixedDeps ReadyPackage where
+  depends (ReadyPackage _ _ _ deps) = map packageId deps
+
+-- | Sometimes we need to convert a 'ReadyPackage' back to a
+-- 'ConfiguredPackage'. For example, a failed 'PlanPackage' can be *either*
+-- Ready or Configured.
+readyPackageToConfiguredPackage :: ReadyPackage -> ConfiguredPackage
+readyPackageToConfiguredPackage (ReadyPackage srcpkg flags stanzas deps) =
+  ConfiguredPackage srcpkg flags stanzas (map packageId deps)
 
 -- | A package description along with the location of the package sources.
 --
 data SourcePackage = SourcePackage {
-    packageInfoId      :: PackageId,
-    packageDescription :: GenericPackageDescription,
-    packageSource      :: PackageLocation (Maybe FilePath)
+    packageInfoId        :: PackageId,
+    packageDescription   :: GenericPackageDescription,
+    packageSource        :: PackageLocation (Maybe FilePath),
+    packageDescrOverride :: PackageDescriptionOverride
   }
   deriving Show
+
+-- | We sometimes need to override the .cabal file in the tarball with
+-- the newer one from the package index.
+type PackageDescriptionOverride = Maybe ByteString
 
 instance Package SourcePackage where packageId = packageInfoId
 
@@ -145,14 +173,7 @@ data PackageLocation local =
 --TODO:
 --  * add support for darcs and other SCM style remote repos with a local cache
 --  | ScmPackage
-  deriving Show
-
-instance Functor PackageLocation where
-  fmap _ (LocalUnpackedPackage dir)      = LocalUnpackedPackage dir
-  fmap _ (LocalTarballPackage  file)     = LocalTarballPackage  file
-  fmap f (RemoteTarballPackage uri x)    = RemoteTarballPackage uri    (f x)
-  fmap f (RepoTarballPackage repo pkg x) = RepoTarballPackage repo pkg (f x)
-
+  deriving (Show, Functor)
 
 data LocalRepo = LocalRepo
   deriving (Show,Eq)
@@ -182,6 +203,7 @@ data BuildFailure = DependentFailed PackageId
                   | TestsFailed     SomeException
                   | InstallFailed   SomeException
 data BuildSuccess = BuildOk         DocsResult TestsResult
+                                    (Maybe InstalledPackageInfo)
 
 data DocsResult  = DocsNotTried  | DocsFailed  | DocsOk
 data TestsResult = TestsNotTried | TestsOk

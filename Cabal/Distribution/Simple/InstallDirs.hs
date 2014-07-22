@@ -1,10 +1,9 @@
 {-# LANGUAGE CPP, ForeignFunctionInterface #-}
-{-# OPTIONS_NHC98 -cpp #-}
-{-# OPTIONS_JHC -fcpp -fffi #-}
 -----------------------------------------------------------------------------
 -- |
 -- Module      :  Distribution.Simple.InstallDirs
 -- Copyright   :  Isaac Jones 2003-2004
+-- License     :  BSD3
 --
 -- Maintainer  :  cabal-devel@haskell.org
 -- Portability :  portable
@@ -17,36 +16,6 @@
 -- changing the prefix all other dirs still end up changed appropriately. So it
 -- provides a 'PathTemplate' type and functions for substituting for these
 -- templates.
-
-{- All rights reserved.
-
-Redistribution and use in source and binary forms, with or without
-modification, are permitted provided that the following conditions are
-met:
-
-    * Redistributions of source code must retain the above copyright
-      notice, this list of conditions and the following disclaimer.
-
-    * Redistributions in binary form must reproduce the above
-      copyright notice, this list of conditions and the following
-      disclaimer in the documentation and/or other materials provided
-      with the distribution.
-
-    * Neither the name of Isaac Jones nor the names of other
-      contributors may be used to endorse or promote products derived
-      from this software without specific prior written permission.
-
-THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. -}
 
 module Distribution.Simple.InstallDirs (
         InstallDirs(..),
@@ -78,14 +47,12 @@ import Data.Maybe (fromMaybe)
 import Data.Monoid (Monoid(..))
 import System.Directory (getAppUserDataDirectory)
 import System.FilePath ((</>), isPathSeparator, pathSeparator)
-#if __HUGS__ || __GLASGOW_HASKELL__ > 606
 import System.FilePath (dropDrive)
-#endif
 
 import Distribution.Package
          ( PackageIdentifier, packageName, packageVersion )
 import Distribution.System
-         ( OS(..), buildOS, Platform(..), buildPlatform )
+         ( OS(..), buildOS, Platform(..) )
 import Distribution.Compiler
          ( CompilerId, CompilerFlavor(..) )
 import Distribution.Text
@@ -97,15 +64,15 @@ import Foreign.C
 #endif
 
 -- ---------------------------------------------------------------------------
--- Instalation directories
+-- Installation directories
 
 
 -- | The directories where we will install files for packages.
 --
 -- We have several different directories for different types of files since
 -- many systems have conventions whereby different types of files in a package
--- are installed in different direcotries. This is particularly the case on
--- unix style systems.
+-- are installed in different directories. This is particularly the case on
+-- Unix style systems.
 --
 data InstallDirs dir = InstallDirs {
         prefix       :: dir,
@@ -121,7 +88,8 @@ data InstallDirs dir = InstallDirs {
         docdir       :: dir,
         mandir       :: dir,
         htmldir      :: dir,
-        haddockdir   :: dir
+        haddockdir   :: dir,
+        sysconfdir   :: dir
     } deriving (Read, Show)
 
 instance Functor InstallDirs where
@@ -139,7 +107,8 @@ instance Functor InstallDirs where
     docdir       = f (docdir dirs),
     mandir       = f (mandir dirs),
     htmldir      = f (htmldir dirs),
-    haddockdir   = f (haddockdir dirs)
+    haddockdir   = f (haddockdir dirs),
+    sysconfdir   = f (sysconfdir dirs)
   }
 
 instance Monoid dir => Monoid (InstallDirs dir) where
@@ -157,7 +126,8 @@ instance Monoid dir => Monoid (InstallDirs dir) where
       docdir       = mempty,
       mandir       = mempty,
       htmldir      = mempty,
-      haddockdir   = mempty
+      haddockdir   = mempty,
+      sysconfdir   = mempty
   }
   mappend = combineInstallDirs mappend
 
@@ -179,7 +149,8 @@ combineInstallDirs combine a b = InstallDirs {
     docdir       = docdir a     `combine` docdir b,
     mandir       = mandir a     `combine` mandir b,
     htmldir      = htmldir a    `combine` htmldir b,
-    haddockdir   = haddockdir a `combine` haddockdir b
+    haddockdir   = haddockdir a `combine` haddockdir b,
+    sysconfdir   = sysconfdir a `combine` sysconfdir b
   }
 
 appendSubdirs :: (a -> a -> a) -> InstallDirs a -> InstallDirs a
@@ -198,11 +169,11 @@ appendSubdirs append dirs = dirs {
 -- convenient for the user to override the default installation directory
 -- by only having to specify --prefix=... rather than overriding each
 -- individually. This is done by allowing $-style variables in the dirs.
--- These are expanded by textual substituion (see 'substPathTemplate').
+-- These are expanded by textual substitution (see 'substPathTemplate').
 --
 -- A few of these installation directories are split into two components, the
 -- dir and subdir. The full installation path is formed by combining the two
--- together with @\/@. The reason for this is compatibility with other unix
+-- together with @\/@. The reason for this is compatibility with other Unix
 -- build systems which also support @--libdir@ and @--datadir@. We would like
 -- users to be able to configure @--libdir=\/usr\/lib64@ for example but
 -- because by default we want to support installing multiple versions of
@@ -241,7 +212,7 @@ defaultInstallDirs comp userInstall _hasLibs = do
            JHC    -> "$compiler"
            LHC    -> "$compiler"
            UHC    -> "$pkgid"
-           _other -> "$pkgid" </> "$compiler",
+           _other -> "$arch-$os-$compiler" </> "$pkgid",
       dynlibdir    = "$libdir",
       libexecdir   = case buildOS of
         Windows   -> "$prefix" </> "$pkgid"
@@ -251,11 +222,12 @@ defaultInstallDirs comp userInstall _hasLibs = do
       datadir      = case buildOS of
         Windows   -> "$prefix"
         _other    -> "$prefix" </> "share",
-      datasubdir   = "$pkgid",
-      docdir       = "$datadir" </> "doc" </> "$pkgid",
+      datasubdir   = "$arch-$os-$compiler" </> "$pkgid",
+      docdir       = "$datadir" </> "doc" </> "$arch-$os-$compiler" </> "$pkgid",
       mandir       = "$datadir" </> "man",
       htmldir      = "$docdir"  </> "html",
-      haddockdir   = "$htmldir"
+      haddockdir   = "$htmldir",
+      sysconfdir   = "$prefix" </> "etc"
   }
 
 -- ---------------------------------------------------------------------------
@@ -293,7 +265,8 @@ substituteInstallDirTemplates env dirs = dirs'
       mandir     = subst mandir     (prefixBinLibDataVars ++ [docdirVar]),
       htmldir    = subst htmldir    (prefixBinLibDataVars ++ [docdirVar]),
       haddockdir = subst haddockdir (prefixBinLibDataVars ++
-                                      [docdirVar, htmldirVar])
+                                      [docdirVar, htmldirVar]),
+      sysconfdir = subst sysconfdir prefixBinLibVars
     }
     subst dir env' = substPathTemplate (env'++env) (dir dirs)
 
@@ -311,10 +284,10 @@ substituteInstallDirTemplates env dirs = dirs'
 -- | Convert from abstract install directories to actual absolute ones by
 -- substituting for all the variables in the abstract paths, to get real
 -- absolute path.
-absoluteInstallDirs :: PackageIdentifier -> CompilerId -> CopyDest
+absoluteInstallDirs :: PackageIdentifier -> CompilerId -> CopyDest -> Platform
                     -> InstallDirs PathTemplate
                     -> InstallDirs FilePath
-absoluteInstallDirs pkgId compilerId copydest dirs =
+absoluteInstallDirs pkgId compilerId copydest platform dirs =
     (case copydest of
        CopyTo destdir -> fmap ((destdir </>) . dropDrive)
        _              -> id)
@@ -322,7 +295,7 @@ absoluteInstallDirs pkgId compilerId copydest dirs =
   . fmap fromPathTemplate
   $ substituteInstallDirTemplates env dirs
   where
-    env = initialPathTemplateEnv pkgId compilerId
+    env = initialPathTemplateEnv pkgId compilerId platform
 
 
 -- |The location prefix for the /copy/ command.
@@ -337,10 +310,10 @@ data CopyDest
 -- prevents us from making a relocatable package (also known as a \"prefix
 -- independent\" package).
 --
-prefixRelativeInstallDirs :: PackageIdentifier -> CompilerId
+prefixRelativeInstallDirs :: PackageIdentifier -> CompilerId -> Platform
                           -> InstallDirTemplates
                           -> InstallDirs (Maybe FilePath)
-prefixRelativeInstallDirs pkgId compilerId dirs =
+prefixRelativeInstallDirs pkgId compilerId platform dirs =
     fmap relative
   . appendSubdirs combinePathTemplate
   $ -- substitute the path template into each other, except that we map
@@ -350,7 +323,7 @@ prefixRelativeInstallDirs pkgId compilerId dirs =
       prefix = PathTemplate [Variable PrefixVar]
     }
   where
-    env = initialPathTemplateEnv pkgId compilerId
+    env = initialPathTemplateEnv pkgId compilerId platform
 
     -- If it starts with $prefix then it's relative and produce the relative
     -- path by stripping off $prefix/ or $prefix
@@ -364,7 +337,7 @@ prefixRelativeInstallDirs pkgId compilerId dirs =
 -- ---------------------------------------------------------------------------
 -- Path templates
 
--- | An abstract path, posibly containing variables that need to be
+-- | An abstract path, possibly containing variables that need to be
 -- substituted for to get a real 'FilePath'.
 --
 newtype PathTemplate = PathTemplate [PathComponent]
@@ -388,10 +361,11 @@ data PathTemplateVariable =
      | PkgIdVar      -- ^ The @$pkgid@ package Id path variable, eg @foo-1.0@
      | CompilerVar   -- ^ The compiler name and version, eg @ghc-6.6.1@
      | OSVar         -- ^ The operating system name, eg @windows@ or @linux@
-     | ArchVar       -- ^ The cpu architecture name, eg @i386@ or @x86_64@
+     | ArchVar       -- ^ The CPU architecture name, eg @i386@ or @x86_64@
      | ExecutableNameVar -- ^ The executable name; used in shell wrappers
      | TestSuiteNameVar   -- ^ The name of the test suite being run
-     | TestSuiteResultVar -- ^ The result of the test suite being run, eg @pass@, @fail@, or @error@.
+     | TestSuiteResultVar -- ^ The result of the test suite being run, eg
+                          -- @pass@, @fail@, or @error@.
      | BenchmarkNameVar   -- ^ The name of the benchmark being run
      | UniqueVar          -- ^ A for this package unique identifier
   deriving Eq
@@ -423,12 +397,12 @@ substPathTemplate environment (PathTemplate template) =
                   Nothing                        -> [component]
 
 -- | The initial environment has all the static stuff but no paths
-initialPathTemplateEnv :: PackageIdentifier -> CompilerId -> PathTemplateEnv
-initialPathTemplateEnv pkgId compilerId =
+initialPathTemplateEnv :: PackageIdentifier -> CompilerId -> Platform
+                       -> PathTemplateEnv
+initialPathTemplateEnv pkgId compilerId platform =
      packageTemplateEnv  pkgId
   ++ compilerTemplateEnv compilerId
-  ++ platformTemplateEnv buildPlatform -- platform should be param if we want
-                                       -- to do cross-platform configuation
+  ++ platformTemplateEnv platform
 
 packageTemplateEnv :: PackageIdentifier -> PathTemplateEnv
 packageTemplateEnv pkgId =
@@ -523,7 +497,7 @@ instance Show PathComponent where
   showList = foldr (\x -> (shows x .)) id
 
 instance Read PathComponent where
-  -- for some reason we colapse multiple $ symbols here
+  -- for some reason we collapse multiple $ symbols here
   readsPrec _ = lex0
     where lex0 [] = []
           lex0 ('$':'$':s') = lex0 ('$':s')
@@ -565,9 +539,6 @@ getWindowsProgramFilesDir = do
 #if mingw32_HOST_OS
 shGetFolderPath :: CInt -> IO (Maybe FilePath)
 shGetFolderPath n =
-# if __HUGS__
-  return Nothing
-# else
   allocaArray long_path_size $ \pPath -> do
      r <- c_SHGetFolderPath nullPtr n nullPtr 0 pPath
      if (r /= 0)
@@ -575,7 +546,6 @@ shGetFolderPath n =
         else do s <- peekCWString pPath; return (Just s)
   where
     long_path_size      = 1024 -- MAX_PATH is 260, this should be plenty
-# endif
 
 csidl_PROGRAM_FILES :: CInt
 csidl_PROGRAM_FILES = 0x0026
@@ -589,20 +559,4 @@ foreign import stdcall unsafe "shlobj.h SHGetFolderPathW"
                               -> CInt
                               -> CWString
                               -> IO CInt
-#endif
-
-#if !(__HUGS__ || __GLASGOW_HASKELL__ > 606)
--- Compat: this function only appears in FilePath > 1.0
--- (which at the time of writing is unreleased)
-dropDrive :: FilePath -> FilePath
-dropDrive (c:cs) | isPathSeparator c = cs
-dropDrive (_:':':c:cs) | isWindows
-                      && isPathSeparator c = cs  -- path with drive letter
-dropDrive (_:':':cs)   | isWindows         = cs
-dropDrive cs = cs
-
-isWindows :: Bool
-isWindows = case buildOS of
-  Windows -> True
-  _       -> False
 #endif

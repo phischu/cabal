@@ -1,3 +1,4 @@
+{-# LANGUAGE DeriveFunctor #-}
 {-# OPTIONS_GHC -fno-warn-unused-imports #-}
 -----------------------------------------------------------------------------
 -- |
@@ -21,6 +22,7 @@ module Distribution.Client.Tar (
   -- * Converting between internal and external representation
   read,
   write,
+  writeEntries,
 
   -- * Packing and unpacking files to\/from internal representation
   pack,
@@ -38,6 +40,11 @@ module Distribution.Client.Tar (
   DevMinor,
   TypeCode,
   Format(..),
+  buildTreeRefTypeCode,
+  buildTreeSnapshotTypeCode,
+  isBuildTreeRefTypeCode,
+  entrySizeInBlocks,
+  entrySizeInBytes,
 
   -- * Constructing simple entry values
   simpleEntry,
@@ -65,7 +72,8 @@ import Data.Int      (Int64)
 import Data.Bits     (Bits, shiftL, testBit)
 import Data.List     (foldl')
 import Numeric       (readOct, showOct)
-import Control.Monad (MonadPlus(mplus), when)
+import Control.Applicative (Applicative(..))
+import Control.Monad (MonadPlus(mplus), when, ap, liftM)
 import qualified Data.Map as Map
 import qualified Data.ByteString.Lazy as BS
 import qualified Data.ByteString.Lazy.Char8 as BS.Char8
@@ -79,16 +87,16 @@ import qualified System.FilePath         as FilePath.Native
 import qualified System.FilePath.Windows as FilePath.Windows
 import qualified System.FilePath.Posix   as FilePath.Posix
 import System.Directory
-         ( getDirectoryContents, doesDirectoryExist, getModificationTime
+         ( getDirectoryContents, doesDirectoryExist
          , getPermissions, createDirectoryIfMissing, copyFile )
 import qualified System.Directory as Permissions
          ( Permissions(executable) )
-import Distribution.Compat.FilePerms
+import Distribution.Client.Compat.FilePerms
          ( setFileExecutable )
 import System.Posix.Types
          ( FileMode )
-import System.Time
-         ( ClockTime(TOD) )
+import Distribution.Client.Compat.Time
+         ( EpochTime, getModTime )
 import System.IO
          ( IOMode(ReadMode), openBinaryFile, hFileSize )
 import System.IO.Unsafe (unsafeInterleaveIO)
@@ -111,16 +119,15 @@ extractTarGzFile :: FilePath -- ^ Destination directory
                  -> FilePath -- ^ Expected subdir (to check for tarbombs)
                  -> FilePath -- ^ Tarball
                 -> IO ()
-extractTarGzFile dir expected tar = do
-  unpack dir . checkTarbomb expected . read . GZipUtils.maybeDecompress =<< BS.readFile tar
+extractTarGzFile dir expected tar =
+  unpack dir . checkTarbomb expected . read
+  . GZipUtils.maybeDecompress =<< BS.readFile tar
 
 --
 -- * Entry type
 --
 
 type FileSize  = Int64
--- | The number of seconds since the UNIX epoch
-type EpochTime = Int64
 type DevMajor  = Int
 type DevMinor  = Int
 type TypeCode  = Char
@@ -151,10 +158,40 @@ data Entry = Entry {
     entryFormat :: !Format
   }
 
+-- | Type code for the local build tree reference entry type. We don't use the
+-- symbolic link entry type because it allows only 100 ASCII characters for the
+-- path.
+buildTreeRefTypeCode :: TypeCode
+buildTreeRefTypeCode = 'C'
+
+-- | Type code for the local build tree snapshot entry type.
+buildTreeSnapshotTypeCode :: TypeCode
+buildTreeSnapshotTypeCode = 'S'
+
+-- | Is this a type code for a build tree reference?
+isBuildTreeRefTypeCode :: TypeCode -> Bool
+isBuildTreeRefTypeCode typeCode
+  | (typeCode == buildTreeRefTypeCode
+     || typeCode == buildTreeSnapshotTypeCode) = True
+  | otherwise                                  = False
+
 -- | Native 'FilePath' of the file or directory within the archive.
 --
 entryPath :: Entry -> FilePath
 entryPath = fromTarPath . entryTarPath
+
+-- | Return the size of an entry in bytes.
+entrySizeInBytes :: Entry -> FileSize
+entrySizeInBytes = (*512) . fromIntegral . entrySizeInBlocks
+
+-- | Return the number of blocks in an entry.
+entrySizeInBlocks :: Entry -> Int
+entrySizeInBlocks entry = 1 + case entryContent entry of
+  NormalFile     _   size -> bytesToBlocks size
+  OtherEntryType _ _ size -> bytesToBlocks size
+  _                       -> 0
+  where
+    bytesToBlocks s = 1 + ((fromIntegral s - 1) `div` 512)
 
 -- | The content of a tar archive entry, which depends on the type of entry.
 --
@@ -194,7 +231,7 @@ data Format =
      V7Format
 
      -- | The \"USTAR\" format is an extension of the classic V7 format. It was
-     -- later standardised by POSIX. It has some restructions but is the most
+     -- later standardised by POSIX. It has some restrictions but is the most
      -- portable format.
      --
    | UstarFormat
@@ -219,7 +256,7 @@ directoryPermissions :: Permissions
 directoryPermissions  = 0o0755
 
 isExecutable :: Permissions -> Bool
-isExecutable p = testBit p 0 || testBit p 6 -- user or other exectuable
+isExecutable p = testBit p 0 || testBit p 6 -- user or other executable
 
 -- | An 'Entry' with all default values except for the file name and type. It
 -- uses the portable USTAR/POSIX format (see 'UstarHeader').
@@ -283,7 +320,7 @@ directoryEntry name = simpleEntry name Directory
 --
 -- So it's understandable but rather annoying.
 --
--- * Tar paths use posix format (ie @\'/\'@ directory separators), irrespective
+-- * Tar paths use POSIX format (ie @\'/\'@ directory separators), irrespective
 --   of the local path conventions.
 --
 -- * The directory separator between the prefix and name is /not/ stored.
@@ -332,7 +369,7 @@ toTarPath isDir = splitLongPath
 -- | Take a sanitized path, split on directory separators and try to pack it
 -- into the 155 + 100 tar file name format.
 --
--- The stragey is this: take the name-directory components in reverse order
+-- The strategy is this: take the name-directory components in reverse order
 -- and try to fit as many components into the 100 long name area as possible.
 -- If all the remaining components fit in the 155 name area then we win.
 --
@@ -343,7 +380,7 @@ splitLongPath path =
     Right (name, [])         -> Right (TarPath name "")
     Right (name, first:rest) -> case packName prefixMax remainder of
       Left err               -> Left err
-      Right (_     , (_:_))  -> Left "File name too long (cannot split)"
+      Right (_     , _ : _)  -> Left "File name too long (cannot split)"
       Right (prefix, [])     -> Right (TarPath name prefix)
       where
         -- drop the '/' between the name and prefix:
@@ -365,7 +402,7 @@ splitLongPath path =
                                      where n' = n + length c
     packName' _      _ ok    cs  = (FilePath.Posix.joinPath ok, cs)
 
--- | The tar format allows just 100 ASCII charcters for the 'SymbolicLink' and
+-- | The tar format allows just 100 ASCII characters for the 'SymbolicLink' and
 -- 'HardLink' entry types.
 --
 newtype LinkTarget = LinkTarget FilePath
@@ -448,7 +485,7 @@ entriesIndex = foldlEntries (\m e -> Map.insert (entryTarPath e) e m) Map.empty
 -- * file names are valid
 --
 -- These checks are from the perspective of the current OS. That means we check
--- for \"@C:\blah@\" files on Windows and \"\/blah\" files on unix. For archive
+-- for \"@C:\blah@\" files on Windows and \"\/blah\" files on Unix. For archive
 -- entry types 'HardLink' and 'SymbolicLink' the same checks are done for the
 -- link target. A failure in any entry terminates the sequence of entries with
 -- an error.
@@ -475,7 +512,7 @@ checkEntrySecurity entry = case entryContent entry of
       | not (FilePath.Native.isValid name)
       = Just $ "Invalid file name in tar archive: " ++ show name
 
-      | any (=="..") (FilePath.Native.splitDirectories name)
+      | ".." `elem` FilePath.Native.splitDirectories name
       = Just $ "Invalid file name in tar archive: " ++ show name
 
       | otherwise = Nothing
@@ -493,8 +530,10 @@ checkEntryTarbomb _ entry | nonFilesystemEntry = Nothing
 checkEntryTarbomb expectedTopDir entry =
   case FilePath.Native.splitDirectories (entryPath entry) of
     (topDir:_) | topDir == expectedTopDir -> Nothing
-    _ -> Just $ "File in tar archive is not in the expected directory "
-             ++ show expectedTopDir
+    s -> Just $ "File in tar archive is not in the expected directory. "
+             ++ "Expected: " ++ show expectedTopDir
+             ++ " but got the following hierarchy: "
+             ++ show s
 
 
 --
@@ -631,13 +670,19 @@ getChars :: Int64 -> Int64 -> ByteString -> String
 getChars off len = BS.Char8.unpack . getBytes off len
 
 getString :: Int64 -> Int64 -> ByteString -> String
-getString off len = BS.Char8.unpack . BS.Char8.takeWhile (/='\0') . getBytes off len
+getString off len = BS.Char8.unpack . BS.Char8.takeWhile (/='\0')
+                    . getBytes off len
 
 data Partial a = Error String | Ok a
+  deriving Functor
 
 partial :: Partial a -> Either String a
 partial (Error msg) = Left msg
 partial (Ok x)      = Right x
+
+instance Applicative Partial where
+    pure          = return
+    (<*>)         = ap
 
 instance Monad Partial where
     return        = Ok
@@ -657,6 +702,11 @@ instance Monad Partial where
 write :: [Entry] -> ByteString
 write es = BS.concat $ map putEntry es ++ [BS.replicate (512*2) 0]
 
+-- | Same as 'write', but for 'Entries'.
+writeEntries :: Entries -> ByteString
+writeEntries entries = BS.concat $ foldrEntries (\e res -> putEntry e : res)
+                       [BS.replicate (512*2) 0] error entries
+
 putEntry :: Entry -> ByteString
 putEntry entry = case entryContent entry of
   NormalFile       content size -> BS.concat [ header, content, padding size ]
@@ -669,12 +719,15 @@ putEntry entry = case entryContent entry of
 
 putHeader :: Entry -> ByteString
 putHeader entry =
-     BS.Char8.pack $ take 148 block
-  ++ putOct 7 checksum
-  ++ ' ' : drop 156 block
+     BS.concat [ BS.take 148 block
+               , BS.Char8.pack $ putOct 7 checksum
+               , BS.Char8.singleton ' '
+               , BS.drop 156 block ]
   where
-    block    = putHeaderNoChkSum entry
-    checksum = foldl' (\x y -> x + ord y) 0 block
+    -- putHeaderNoChkSum returns a String, so we convert it to the final
+    -- representation before calculating the checksum.
+    block    = BS.Char8.pack . putHeaderNoChkSum $ entry
+    checksum = BS.Char8.foldl' (\x y -> x + ord y) 0 block
 
 putHeaderNoChkSum :: Entry -> String
 putHeaderNoChkSum Entry {
@@ -896,8 +949,3 @@ recurseDirectories base (dir:dirs) = unsafeInterleaveIO $ do
     ignore ['.']      = True
     ignore ['.', '.'] = True
     ignore _          = False
-
-getModTime :: FilePath -> IO EpochTime
-getModTime path = do
-  TOD t _ <- getModificationTime path
-  return $! fromIntegral t

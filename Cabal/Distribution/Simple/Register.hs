@@ -2,6 +2,7 @@
 -- |
 -- Module      :  Distribution.Simple.Register
 -- Copyright   :  Isaac Jones 2003-2004
+-- License     :  BSD3
 --
 -- Maintainer  :  cabal-devel@haskell.org
 -- Portability :  portable
@@ -14,7 +15,7 @@
 -- popular so we also provide a way to simply generate the package registration
 -- file which then must be manually passed to @ghc-pkg@. It is possible to
 -- generate registration information for where the package is to be installed,
--- or alternatively to register the package inplace in the build tree. The
+-- or alternatively to register the package in place in the build tree. The
 -- latter is occasionally handy, and will become more important when we try to
 -- build multi-package systems.
 --
@@ -22,41 +23,12 @@
 -- mixes it all in in this module, which is rather unsatisfactory. The script
 -- generation and the unregister feature are not well used or tested.
 
-{- Copyright (c) 2003-2004, Isaac Jones
-All rights reserved.
-
-Redistribution and use in source and binary forms, with or without
-modification, are permitted provided that the following conditions are
-met:
-
-    * Redistributions of source code must retain the above copyright
-      notice, this list of conditions and the following disclaimer.
-
-    * Redistributions in binary form must reproduce the above
-      copyright notice, this list of conditions and the following
-      disclaimer in the documentation and/or other materials provided
-      with the distribution.
-
-    * Neither the name of Isaac Jones nor the names of other
-      contributors may be used to endorse or promote products derived
-      from this software without specific prior written permission.
-
-THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. -}
-
 module Distribution.Simple.Register (
     register,
     unregister,
 
+    initPackageDB,
+    invokeHcPkg,
     registerPackage,
     generateRegistrationInfo,
     inplaceInstalledPackageInfo,
@@ -66,18 +38,22 @@ module Distribution.Simple.Register (
 
 import Distribution.Simple.LocalBuildInfo
          ( LocalBuildInfo(..), ComponentLocalBuildInfo(..)
+         , ComponentName(..), getComponentLocalBuildInfo
+         , LibraryName(..)
          , InstallDirs(..), absoluteInstallDirs )
 import Distribution.Simple.BuildPaths (haddockName)
 import qualified Distribution.Simple.GHC  as GHC
 import qualified Distribution.Simple.LHC  as LHC
 import qualified Distribution.Simple.Hugs as Hugs
 import qualified Distribution.Simple.UHC  as UHC
+import qualified Distribution.Simple.HaskellSuite as HaskellSuite
 import Distribution.Simple.Compiler
-         ( compilerVersion, CompilerFlavor(..), compilerFlavor
+         ( compilerVersion, Compiler, CompilerFlavor(..), compilerFlavor
          , PackageDBStack, registrationPackageDB )
 import Distribution.Simple.Program
-         ( ConfiguredProgram, runProgramInvocation
-         , requireProgram, lookupProgram, ghcPkgProgram, lhcPkgProgram )
+         ( ProgramConfiguration, ConfiguredProgram
+         , runProgramInvocation, requireProgram, lookupProgram
+         , ghcPkgProgram, lhcPkgProgram )
 import Distribution.Simple.Program.Script
          ( invocationAsSystemScript )
 import qualified Distribution.Simple.Program.HcPkg as HcPkg
@@ -115,7 +91,7 @@ import Data.Maybe
          ( isJust, fromMaybe, maybeToList )
 import Data.List
          ( partition, nub )
-
+import qualified Data.ByteString.Lazy.Char8 as BS.Char8
 
 -- -----------------------------------------------------------------------------
 -- Registration
@@ -123,10 +99,9 @@ import Data.List
 register :: PackageDescription -> LocalBuildInfo
          -> RegisterFlags -- ^Install in the user's database?; verbose
          -> IO ()
-register pkg@PackageDescription { library       = Just lib  }
-         lbi@LocalBuildInfo     { libraryConfig = Just clbi } regFlags
+register pkg@PackageDescription { library       = Just lib  } lbi regFlags
   = do
-
+    let clbi = getComponentLocalBuildInfo lbi CLibName
     installedPkgInfo <- generateRegistrationInfo
                            verbosity pkg lib lbi clbi inplace distPref
 
@@ -212,6 +187,26 @@ generateRegistrationInfo verbosity pkg lib lbi clbi inplace distPref = do
   return installedPkgInfo{ IPI.installedPackageId = ipid }
 
 
+-- | Create an empty package DB at the specified location.
+initPackageDB :: Verbosity -> Compiler -> ProgramConfiguration -> FilePath
+                 -> IO ()
+initPackageDB verbosity comp conf dbPath =
+  case (compilerFlavor comp) of
+    GHC -> GHC.initPackageDB verbosity conf dbPath
+    HaskellSuite {} -> HaskellSuite.initPackageDB verbosity conf dbPath
+    _   -> die "Distribution.Simple.Register.initPackageDB: \
+               \not implemented for this compiler"
+
+-- | Run @hc-pkg@ using a given package DB stack, directly forwarding the
+-- provided command-line arguments to it.
+invokeHcPkg :: Verbosity -> Compiler -> ProgramConfiguration -> PackageDBStack
+                -> [String] -> IO ()
+invokeHcPkg verbosity comp conf dbStack extraArgs =
+    case (compilerFlavor comp) of
+      GHC -> GHC.invokeHcPkg verbosity conf dbStack extraArgs
+      _   -> die "Distribution.Simple.Register.invokeHcPkg: \
+                 \not implemented for this compiler"
+
 registerPackage :: Verbosity
                 -> InstalledPackageInfo
                 -> PackageDescription
@@ -231,6 +226,8 @@ registerPackage verbosity installedPkgInfo pkg lbi inplace packageDbs = do
     UHC  -> UHC.registerPackage  verbosity installedPkgInfo pkg lbi inplace packageDbs
     JHC  -> notice verbosity "Registering for jhc (nothing to do)"
     NHC  -> notice verbosity "Registering for nhc98 (nothing to do)"
+    HaskellSuite {} ->
+      HaskellSuite.registerPackage verbosity installedPkgInfo pkg lbi inplace packageDbs
     _    -> die "Registering is not implemented for this compiler"
 
 
@@ -292,7 +289,9 @@ generalInstalledPackageInfo adjustRelIncDirs pkg lib clbi installDirs timestamp 
     IPI.libraryDirs        = if hasLibrary
                                then libdir installDirs : extraLibDirs bi
                                else                      extraLibDirs bi,
-    IPI.hsLibraries        = [ "HS" ++ display (packageId pkg) | hasLibrary ],
+    IPI.hsLibraries        = [ libname
+                             | LibraryName libname <- componentLibraries clbi
+                             , hasLibrary ],
     IPI.extraLibraries     = extraLibs bi,
     IPI.extraGHCiLibraries = [],
     IPI.includeDirs        = absinc ++ adjustRelIncDirs relinc,
@@ -317,10 +316,10 @@ generalInstalledPackageInfo adjustRelIncDirs pkg lib clbi installDirs timestamp 
     hasLibrary = hasModules || not (null (cSources bi))
 
 
--- | Construct 'InstalledPackageInfo' for a library that is inplace in the
+-- | Construct 'InstalledPackageInfo' for a library that is in place in the
 -- build tree.
 --
--- This function knows about the layout of inplace packages.
+-- This function knows about the layout of in place packages.
 --
 inplaceInstalledPackageInfo :: FilePath -- ^ top of the build tree
                             -> FilePath -- ^ location of the dist tree
@@ -390,7 +389,7 @@ unregister pkg lbi regFlags = do
                          packageDb pkgid
       in if genScript
            then writeFileAtomic unregScriptFileName
-                  (invocationAsSystemScript buildOS invocation)
+                  (BS.Char8.pack $ invocationAsSystemScript buildOS invocation)
             else runProgramInvocation verbosity invocation
     Hugs -> do
         _ <- tryIO $ removeDirectoryRecursive (libdir installDirs)

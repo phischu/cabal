@@ -12,9 +12,11 @@
 -----------------------------------------------------------------------------
 module Distribution.Client.Configure (
     configure,
+    chooseCabalVersion,
   ) where
 
 import Distribution.Client.Dependency
+import Distribution.Client.Dependency.Types (AllowNewer(..), isAllowNewer)
 import qualified Distribution.Client.InstallPlan as InstallPlan
 import Distribution.Client.InstallPlan (InstallPlan)
 import Distribution.Client.IndexUtils as IndexUtils
@@ -37,6 +39,7 @@ import Distribution.Simple.Setup
 import Distribution.Simple.PackageIndex (PackageIndex)
 import Distribution.Simple.Utils
          ( defaultPackageDesc )
+import qualified Distribution.InstalledPackageInfo as Installed
 import Distribution.Package
          ( Package(..), packageName, Dependency(..), thisPackageVersion )
 import Distribution.PackageDescription.Parse
@@ -48,29 +51,45 @@ import Distribution.Version
 import Distribution.Simple.Utils as Utils
          ( notice, info, debug, die )
 import Distribution.System
-         ( Platform, buildPlatform )
+         ( Platform )
 import Distribution.Verbosity as Verbosity
          ( Verbosity )
+import Distribution.Version
+         ( Version(..), VersionRange, orLaterVersion )
 
 import Data.Monoid (Monoid(..))
+
+-- | Choose the Cabal version such that the setup scripts compiled against this
+-- version will support the given command-line flags.
+chooseCabalVersion :: ConfigExFlags -> Maybe Version -> VersionRange
+chooseCabalVersion configExFlags maybeVersion =
+  maybe defaultVersionRange thisVersion maybeVersion
+  where
+    allowNewer = fromFlagOrDefault False $
+                 fmap isAllowNewer (configAllowNewer configExFlags)
+
+    defaultVersionRange = if allowNewer
+                          then orLaterVersion (Version [1,19,2] [])
+                          else anyVersion
 
 -- | Configure the package found in the local directory
 configure :: Verbosity
           -> PackageDBStack
           -> [Repo]
           -> Compiler
+          -> Platform
           -> ProgramConfiguration
           -> ConfigFlags
           -> ConfigExFlags
           -> [String]
           -> IO ()
-configure verbosity packageDBs repos comp conf
+configure verbosity packageDBs repos comp platform conf
   configFlags configExFlags extraArgs = do
 
   installedPkgIndex <- getInstalledPackages verbosity comp packageDBs conf
   sourcePkgDb       <- getSourcePackages    verbosity repos
 
-  progress <- planLocalPackage verbosity comp configFlags configExFlags
+  progress <- planLocalPackage verbosity comp platform configFlags configExFlags
                                installedPkgIndex sourcePkgDb
 
   notice verbosity "Resolving dependencies..."
@@ -83,7 +102,7 @@ configure verbosity packageDBs repos comp conf
         configureCommand (const configFlags) extraArgs
 
     Right installPlan -> case InstallPlan.ready installPlan of
-      [pkg@(ConfiguredPackage (SourcePackage _ _ (LocalUnpackedPackage _)) _ _ _ _)] ->
+      [pkg@(ReadyPackage (SourcePackage _ _ (LocalUnpackedPackage _) _) _ _ _)] ->
         configurePackage verbosity
           (InstallPlan.planPlatform installPlan)
           (InstallPlan.planCompiler installPlan)
@@ -95,9 +114,10 @@ configure verbosity packageDBs repos comp conf
 
   where
     setupScriptOptions index = SetupScriptOptions {
-      useCabalVersion  = maybe anyVersion thisVersion
+      useCabalVersion  = chooseCabalVersion configExFlags
                          (flagToMaybe (configCabalVersion configExFlags)),
       useCompiler      = Just comp,
+      usePlatform      = Just platform,
       usePackageDB     = packageDBs',
       usePackageIndex  = index',
       useProgramConfig = conf,
@@ -126,11 +146,12 @@ configure verbosity packageDBs repos comp conf
 -- and all its dependencies.
 --
 planLocalPackage :: Verbosity -> Compiler
+                 -> Platform
                  -> ConfigFlags -> ConfigExFlags
                  -> PackageIndex
                  -> SourcePackageDb
                  -> IO (Progress String String InstallPlan)
-planLocalPackage verbosity comp configFlags configExFlags installedPkgIndex
+planLocalPackage verbosity comp platform configFlags configExFlags installedPkgIndex
   (SourcePackageDb _ packagePrefs) = do
   pkg <- readPackageDescription verbosity =<< defaultPackageDesc verbosity
   solver <- chooseSolver verbosity (fromFlag $ configSolver configExFlags) (compilerId comp)
@@ -139,7 +160,8 @@ planLocalPackage verbosity comp configFlags configExFlags installedPkgIndex
       localPkg = SourcePackage {
         packageInfoId             = packageId pkg,
         Source.packageDescription = pkg,
-        packageSource             = LocalUnpackedPackage "."
+        packageSource             = LocalUnpackedPackage ".",
+        packageDescrOverride      = Nothing
       }
 
       testsEnabled = fromFlagOrDefault False $ configTests configFlags
@@ -147,16 +169,18 @@ planLocalPackage verbosity comp configFlags configExFlags installedPkgIndex
         fromFlagOrDefault False $ configBenchmarks configFlags
 
       resolverParams =
+          removeUpperBounds (fromFlagOrDefault AllowNewerNone $
+                             configAllowNewer configExFlags)
 
-          addPreferences
+        . addPreferences
             -- preferences from the config file or command line
             [ PackageVersionPreference name ver
             | Dependency name ver <- configPreferences configExFlags ]
 
         . addConstraints
             -- version constraints from the config file or command line
-            -- TODO: should warn or error on constraints that are not on direct deps
-            -- or flag constraints not on the package in question.
+            -- TODO: should warn or error on constraints that are not on direct
+            -- deps or flag constraints not on the package in question.
             (map userToPackageConstraint (configExConstraints configExFlags))
 
         . addConstraints
@@ -167,10 +191,9 @@ planLocalPackage verbosity comp configFlags configExFlags installedPkgIndex
         . addConstraints
             -- '--enable-tests' and '--enable-benchmarks' constraints from
             -- command line
-            [ PackageConstraintStanzas (packageName pkg) $ concat
-                [ if testsEnabled then [TestStanzas] else []
-                , if benchmarksEnabled then [BenchStanzas] else []
-                ]
+            [ PackageConstraintStanzas (packageName pkg) $
+                [ TestStanzas  | testsEnabled ] ++
+                [ BenchStanzas | benchmarksEnabled ]
             ]
 
         $ standardInstallPolicy
@@ -178,25 +201,26 @@ planLocalPackage verbosity comp configFlags configExFlags installedPkgIndex
             (SourcePackageDb mempty packagePrefs)
             [SpecificSourcePackage localPkg]
 
-  return (resolveDependencies buildPlatform (compilerId comp) solver resolverParams)
+  return (resolveDependencies platform (compilerId comp) solver resolverParams)
 
 
 -- | Call an installer for an 'SourcePackage' but override the configure
--- flags with the ones given by the 'ConfiguredPackage'. In particular the
--- 'ConfiguredPackage' specifies an exact 'FlagAssignment' and exactly
+-- flags with the ones given by the 'ReadyPackage'. In particular the
+-- 'ReadyPackage' specifies an exact 'FlagAssignment' and exactly
 -- versioned package dependencies. So we ignore any previous partial flag
 -- assignment or dependency constraints and use the new ones.
 --
+-- NB: when updating this function, don't forget to also update
+-- 'installReadyPackage' in D.C.Install.
 configurePackage :: Verbosity
                  -> Platform -> CompilerId
                  -> SetupScriptOptions
                  -> ConfigFlags
-                 -> ConfiguredPackage
+                 -> ReadyPackage
                  -> [String]
                  -> IO ()
 configurePackage verbosity platform comp scriptOptions configFlags
-  (ConfiguredPackage (SourcePackage _ gpkg _) flags stanzas deps installedDeps)
-  extraArgs = do
+  (ReadyPackage (SourcePackage _ gpkg _ _) flags stanzas deps) extraArgs =
 
   unique <- getUnique
   let configureFlags' = (setInstalledPackageIdSuffix (show unique)
@@ -207,15 +231,23 @@ configurePackage verbosity platform comp scriptOptions configFlags
   where
     configureFlags   = filterConfigureFlags configFlags {
       configConfigurationsFlags = flags,
-      configConstraints         = map thisPackageVersion deps,
-      configDependencies        = installedDeps,
-      configVerbosity           = toFlag verbosity,
-      configBenchmarks          = toFlag (BenchStanzas `elem` stanzas),
-      configTests               = toFlag (TestStanzas `elem` stanzas)
+      -- We generate the legacy constraints as well as the new style precise
+      -- deps.  In the end only one set gets passed to Setup.hs configure,
+      -- depending on the Cabal version we are talking to.
+      configConstraints  = [ thisPackageVersion (packageId deppkg)
+                           | deppkg <- deps ],
+      configDependencies = [ (packageName (Installed.sourcePackageId deppkg),
+                              Installed.installedPackageId deppkg)
+                           | deppkg <- deps ],
+      -- Use '--exact-configuration' if supported.
+      configExactConfiguration = toFlag True,
+      configVerbosity          = toFlag verbosity,
+      configBenchmarks         = toFlag (BenchStanzas `elem` stanzas),
+      configTests              = toFlag (TestStanzas `elem` stanzas)
     }
 
     pkg = case finalizePackageDescription flags
            (const True)
            platform comp [] (enableStanzas stanzas gpkg) of
-      Left _ -> error "finalizePackageDescription ConfiguredPackage failed"
+      Left _ -> error "finalizePackageDescription ReadyPackage failed"
       Right (desc, _) -> desc

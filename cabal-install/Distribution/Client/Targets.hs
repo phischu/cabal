@@ -58,6 +58,7 @@ import Distribution.Client.PackageIndex (PackageIndex)
 import qualified Distribution.Client.PackageIndex as PackageIndex
 import qualified Distribution.Client.Tar as Tar
 import Distribution.Client.FetchUtils
+import Distribution.Client.Utils ( tryFindPackageDesc )
 
 import Distribution.PackageDescription
          ( GenericPackageDescription, FlagName(..), FlagAssignment )
@@ -70,7 +71,7 @@ import Distribution.Text
          ( Text(..), display )
 import Distribution.Verbosity (Verbosity)
 import Distribution.Simple.Utils
-         ( die, warn, intercalate, findPackageDesc, fromUTF8, lowercase )
+         ( die, warn, intercalate, fromUTF8, lowercase )
 
 import Data.List
          ( find, nub )
@@ -176,7 +177,6 @@ data PackageSpecifier pkg =
      --
    | SpecificSourcePackage pkg
   deriving Show
-
 
 pkgSpecifierTarget :: Package pkg => PackageSpecifier pkg -> PackageName
 pkgSpecifierTarget (NamedPackage name _)       = name
@@ -423,7 +423,7 @@ expandUserTarget worldFile userTarget = case userTarget of
 
     UserTargetLocalCabalFile file -> do
       let dir = takeDirectory file
-      _   <- findPackageDesc dir -- just as a check
+      _   <- tryFindPackageDesc dir (localPackageError dir) -- just as a check
       return [ PackageTargetLocation (LocalUnpackedPackage dir) ]
 
     UserTargetLocalTarball tarballFile ->
@@ -432,6 +432,9 @@ expandUserTarget worldFile userTarget = case userTarget of
     UserTargetRemoteTarball tarballURL ->
       return [ PackageTargetLocation (RemoteTarballPackage tarballURL ()) ]
 
+localPackageError :: FilePath -> String
+localPackageError dir =
+    "Error reading local package.\nCouldn't find .cabal file in: " ++ dir
 
 -- ------------------------------------------------------------
 -- * Fetching and reading package targets
@@ -469,12 +472,14 @@ readPackageTarget verbosity target = case target of
     PackageTargetLocation location -> case location of
 
       LocalUnpackedPackage dir -> do
-        pkg <- readPackageDescription verbosity =<< findPackageDesc dir
+        pkg <- tryFindPackageDesc dir (localPackageError dir) >>=
+                 readPackageDescription verbosity
         return $ PackageTargetLocation $
                    SourcePackage {
-                     packageInfoId      = packageId pkg,
-                     packageDescription = pkg,
-                     packageSource      = fmap Just location
+                     packageInfoId        = packageId pkg,
+                     packageDescription   = pkg,
+                     packageSource        = fmap Just location,
+                     packageDescrOverride = Nothing
                    }
 
       LocalTarballPackage tarballFile ->
@@ -497,9 +502,10 @@ readPackageTarget verbosity target = case target of
         Just pkg ->
           return $ PackageTargetLocation $
                      SourcePackage {
-                       packageInfoId      = packageId pkg,
-                       packageDescription = pkg,
-                       packageSource      = fmap Just location
+                       packageInfoId        = packageId pkg,
+                       packageDescription   = pkg,
+                       packageSource        = fmap Just location,
+                       packageDescrOverride = Nothing
                      }
 
     extractTarballPackageCabalFile :: FilePath -> String
@@ -706,17 +712,22 @@ readUserConstraint str =
 
 --FIXME: use Text instance for FlagName and FlagAssignment
 instance Text UserConstraint where
-  disp (UserConstraintVersion   pkgname verrange) = disp pkgname <+> disp verrange
-  disp (UserConstraintInstalled pkgname)          = disp pkgname <+> Disp.text "installed"
-  disp (UserConstraintSource    pkgname)          = disp pkgname <+> Disp.text "source"
-  disp (UserConstraintFlags     pkgname flags)    = disp pkgname <+> dispFlagAssignment flags
+  disp (UserConstraintVersion   pkgname verrange) = disp pkgname
+                                                    <+> disp verrange
+  disp (UserConstraintInstalled pkgname)          = disp pkgname
+                                                    <+> Disp.text "installed"
+  disp (UserConstraintSource    pkgname)          = disp pkgname
+                                                    <+> Disp.text "source"
+  disp (UserConstraintFlags     pkgname flags)    = disp pkgname
+                                                    <+> dispFlagAssignment flags
     where
       dispFlagAssignment = Disp.hsep . map dispFlagValue
       dispFlagValue (f, True)   = Disp.char '+' <> dispFlagName f
       dispFlagValue (f, False)  = Disp.char '-' <> dispFlagName f
       dispFlagName (FlagName f) = Disp.text f
 
-  disp (UserConstraintStanzas   pkgname stanzas)  = disp pkgname <+> dispStanzas stanzas
+  disp (UserConstraintStanzas   pkgname stanzas)  = disp pkgname
+                                                    <+> dispStanzas stanzas
     where
       dispStanzas = Disp.hsep . map dispStanza
       dispStanza TestStanzas  = Disp.text "test"
@@ -727,7 +738,7 @@ instance Text UserConstraint where
       spaces = Parse.satisfy isSpace >> Parse.skipSpaces
 
       parseConstraint pkgname =
-            (parse >>= return . UserConstraintVersion pkgname)
+            ((parse >>= return . UserConstraintVersion pkgname)
         +++ (do spaces
                 _ <- Parse.string "installed"
                 return (UserConstraintInstalled pkgname))
@@ -739,7 +750,7 @@ instance Text UserConstraint where
                 return (UserConstraintStanzas pkgname [TestStanzas]))
         +++ (do spaces
                 _ <- Parse.string "bench"
-                return (UserConstraintStanzas pkgname [BenchStanzas]))
+                return (UserConstraintStanzas pkgname [BenchStanzas])))
         <++ (parseFlagAssignment >>= (return . UserConstraintFlags pkgname))
 
       parseFlagAssignment = Parse.many1 (spaces >> parseFlagValue)

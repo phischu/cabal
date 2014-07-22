@@ -2,6 +2,7 @@ module Distribution.Simple.Program.GHC (
     GhcOptions(..),
     GhcMode(..),
     GhcOptimisation(..),
+    GhcDynLinkMode(..),
 
     ghcInvocation,
     renderGhcOptions,
@@ -13,17 +14,17 @@ module Distribution.Simple.Program.GHC (
 import Distribution.Package
 import Distribution.ModuleName
 import Distribution.Simple.Compiler hiding (Flag)
-import Distribution.Simple.Setup    (Flag(..), flagToMaybe, fromFlagOrDefault, flagToList)
+import Distribution.Simple.Setup    ( Flag(..), flagToMaybe, fromFlagOrDefault,
+                                      flagToList )
 --import Distribution.Simple.LocalBuildInfo
 import Distribution.Simple.Program.Types
 import Distribution.Simple.Program.Run
 import Distribution.Text
 import Distribution.Verbosity
 import Distribution.Version
-import Language.Haskell.Extension ( Language(..), Extension(..) )
+import Language.Haskell.Extension   ( Language(..), Extension(..) )
 
 import Data.Monoid
-
 
 -- | A structured set of GHC options/flags
 --
@@ -51,6 +52,10 @@ data GhcOptions = GhcOptions {
 
   -- | Location for output file; the @ghc -o@ flag.
   ghcOptOutputFile    :: Flag FilePath,
+
+  -- | Location for dynamic output file in 'GhcStaticAndDynamic' mode;
+  -- the @ghc -dyno@ flag.
+  ghcOptOutputDynFile :: Flag FilePath,
 
   -- | Start with an empty search path for Haskell source files;
   -- the @ghc -i@ flag (@-i@ on it's own with no path argument).
@@ -97,6 +102,9 @@ data GhcOptions = GhcOptions {
   -- | Don't do the link step, useful in make mode; the @ghc -no-link@ flag.
   ghcOptNoLink :: Flag Bool,
 
+  -- | Don't link in the normal RTS @main@ entry point; the @ghc -no-hs-main@ flag.
+  ghcOptLinkNoHsMain :: Flag Bool,
+
   --------------------
   -- C and CPP stuff
 
@@ -140,6 +148,9 @@ data GhcOptions = GhcOptions {
   -- | Use the \"split object files\" feature; the @ghc -split-objs@ flag.
   ghcOptSplitObjs     :: Flag Bool,
 
+  -- | Run N jobs simultaneously (if possible).
+  ghcOptNumJobs       :: Flag Int,
+
   ----------------
   -- GHCi
 
@@ -151,14 +162,17 @@ data GhcOptions = GhcOptions {
 
   ghcOptHiSuffix      :: Flag String,
   ghcOptObjSuffix     :: Flag String,
+  ghcOptDynHiSuffix   :: Flag String,   -- ^ only in 'GhcStaticAndDynamic' mode
+  ghcOptDynObjSuffix  :: Flag String,   -- ^ only in 'GhcStaticAndDynamic' mode
   ghcOptHiDir         :: Flag FilePath,
   ghcOptObjDir        :: Flag FilePath,
+  ghcOptOutputDir     :: Flag FilePath,
   ghcOptStubDir       :: Flag FilePath,
 
   --------------------
   -- Dynamic linking
 
-  ghcOptDynamic       :: Flag Bool,
+  ghcOptDynLinkMode   :: Flag GhcDynLinkMode,
   ghcOptShared        :: Flag Bool,
   ghcOptFPic          :: Flag Bool,
   ghcOptDylibName     :: Flag String,
@@ -191,21 +205,28 @@ data GhcOptimisation = GhcNoOptimisation             -- ^ @-O0@
                      | GhcSpecialOptimisation String -- ^ e.g. @-Odph@
  deriving (Show, Eq)
 
-
-runGHC :: Verbosity -> ConfiguredProgram -> GhcOptions -> IO ()
-runGHC verbosity ghcProg opts = do
-  runProgramInvocation verbosity (ghcInvocation ghcProg opts)
-
-
-ghcInvocation :: ConfiguredProgram -> GhcOptions -> ProgramInvocation
-ghcInvocation ConfiguredProgram { programVersion = Nothing } _ =
-    error "ghcInvocation: the programVersion must not be Nothing"
-ghcInvocation prog@ConfiguredProgram { programVersion = Just ver } opts =
-    programInvocation prog (renderGhcOptions ver opts)
+data GhcDynLinkMode = GhcStaticOnly       -- ^ @-static@
+                    | GhcDynamicOnly      -- ^ @-dynamic@
+                    | GhcStaticAndDynamic -- ^ @-static -dynamic-too@
+ deriving (Show, Eq)
 
 
-renderGhcOptions :: Version -> GhcOptions -> [String]
-renderGhcOptions version@(Version ver _) opts =
+runGHC :: Verbosity -> ConfiguredProgram -> Compiler -> GhcOptions -> IO ()
+runGHC verbosity ghcProg comp opts = do
+  runProgramInvocation verbosity (ghcInvocation ghcProg comp opts)
+
+
+ghcInvocation :: ConfiguredProgram -> Compiler -> GhcOptions -> ProgramInvocation
+ghcInvocation prog comp opts =
+    programInvocation prog (renderGhcOptions comp opts)
+
+
+renderGhcOptions :: Compiler -> GhcOptions -> [String]
+renderGhcOptions comp opts
+  | compilerFlavor comp /= GHC =
+    error $ "Distribution.Simple.Program.GHC.renderGhcOptions: "
+    ++ "compiler flavor must be 'GHC'!"
+  | otherwise =
   concat
   [ case flagToMaybe (ghcOptMode opts) of
        Nothing                 -> []
@@ -242,11 +263,22 @@ renderGhcOptions version@(Version ver _) opts =
 
   , [ "-split-objs" | flagBool ghcOptSplitObjs ]
 
+
+  , if parmakeSupported comp
+    then
+      let numJobs = fromFlagOrDefault 1 (ghcOptNumJobs opts)
+      in if numJobs > 1 then ["-j" ++ show numJobs] else []
+    else []
+
   --------------------
   -- Dynamic linking
 
   , [ "-shared"  | flagBool ghcOptShared  ]
-  , [ "-dynamic" | flagBool ghcOptDynamic ]
+  , case flagToMaybe (ghcOptDynLinkMode opts) of
+      Nothing                  -> []
+      Just GhcStaticOnly       -> ["-static"]
+      Just GhcDynamicOnly      -> ["-dynamic"]
+      Just GhcStaticAndDynamic -> ["-static", "-dynamic-too"]
   , [ "-fPIC"    | flagBool ghcOptFPic ]
 
   , concat [ ["-dylib-install-name", libname] | libname <- flag ghcOptDylibName ]
@@ -256,6 +288,9 @@ renderGhcOptions version@(Version ver _) opts =
 
   , concat [ ["-osuf",    suf] | suf <- flag ghcOptObjSuffix ]
   , concat [ ["-hisuf",   suf] | suf <- flag ghcOptHiSuffix  ]
+  , concat [ ["-dynosuf", suf] | suf <- flag ghcOptDynObjSuffix ]
+  , concat [ ["-dynhisuf",suf] | suf <- flag ghcOptDynHiSuffix  ]
+  , concat [ ["-outputdir", dir] | dir <- flag ghcOptOutputDir, ver >= [6,10] ]
   , concat [ ["-odir",    dir] | dir <- flag ghcOptObjDir ]
   , concat [ ["-hidir",   dir] | dir <- flag ghcOptHiDir  ]
   , concat [ ["-stubdir", dir] | dir <- flag ghcOptStubDir, ver >= [6,8] ]
@@ -282,6 +317,7 @@ renderGhcOptions version@(Version ver _) opts =
   , ["-l" ++ lib     | lib <- flags ghcOptLinkLibs ]
   , ["-L" ++ dir     | dir <- flags ghcOptLinkLibPath ]
   , concat [ ["-framework", fmwk] | fmwk <- flags ghcOptLinkFrameworks ]
+  , [ "-no-hs-main"  | flagBool ghcOptLinkNoHsMain ]
 
   -------------
   -- Packages
@@ -300,12 +336,14 @@ renderGhcOptions version@(Version ver _) opts =
   ----------------------------
   -- Language and extensions
 
-  , [ "-X" ++ display lang | lang <- flag ghcOptLanguage ]
+  , if ver >= [7]
+    then [ "-X" ++ display lang | lang <- flag ghcOptLanguage ]
+    else []
 
   , [ case lookup ext (ghcOptExtensionMap opts) of
         Just arg -> arg
-        Nothing  -> error $ "renderGhcOptions: " ++ display ext
-                          ++ " not present in ghcOptExtensionMap."
+        Nothing  -> error $ "Distribution.Simple.Program.GHC.renderGhcOptions: "
+                          ++ display ext ++ " not present in ghcOptExtensionMap."
     | ext <- ghcOptExtensions opts ]
 
   ----------------
@@ -320,7 +358,8 @@ renderGhcOptions version@(Version ver _) opts =
   , [ display modu | modu <- flags ghcOptInputModules ]
   , ghcOptInputFiles opts
 
-  , concat [ [ "-o", out] | out <- flag ghcOptOutputFile ]
+  , concat [ [ "-o",    out] | out <- flag ghcOptOutputFile ]
+  , concat [ [ "-dyno", out] | out <- flag ghcOptOutputDynFile ]
 
   ---------------
   -- Extra
@@ -335,6 +374,7 @@ renderGhcOptions version@(Version ver _) opts =
     flags    flg = flg opts
     flagBool flg = fromFlagOrDefault False (flg opts)
 
+    version@(Version ver _) = compilerVersion comp
 
 verbosityOpts :: Verbosity -> [String]
 verbosityOpts verbosity
@@ -373,6 +413,7 @@ instance Monoid GhcOptions where
     ghcOptInputFiles         = mempty,
     ghcOptInputModules       = mempty,
     ghcOptOutputFile         = mempty,
+    ghcOptOutputDynFile      = mempty,
     ghcOptSourcePathClear    = mempty,
     ghcOptSourcePath         = mempty,
     ghcOptPackageName        = mempty,
@@ -385,6 +426,7 @@ instance Monoid GhcOptions where
     ghcOptLinkOptions        = mempty,
     ghcOptLinkFrameworks     = mempty,
     ghcOptNoLink             = mempty,
+    ghcOptLinkNoHsMain       = mempty,
     ghcOptCcOptions          = mempty,
     ghcOptCppOptions         = mempty,
     ghcOptCppIncludePath     = mempty,
@@ -396,13 +438,17 @@ instance Monoid GhcOptions where
     ghcOptOptimisation       = mempty,
     ghcOptProfilingMode      = mempty,
     ghcOptSplitObjs          = mempty,
+    ghcOptNumJobs            = mempty,
     ghcOptGHCiScripts        = mempty,
     ghcOptHiSuffix           = mempty,
     ghcOptObjSuffix          = mempty,
+    ghcOptDynHiSuffix        = mempty,
+    ghcOptDynObjSuffix       = mempty,
     ghcOptHiDir              = mempty,
     ghcOptObjDir             = mempty,
+    ghcOptOutputDir          = mempty,
     ghcOptStubDir            = mempty,
-    ghcOptDynamic            = mempty,
+    ghcOptDynLinkMode        = mempty,
     ghcOptShared             = mempty,
     ghcOptFPic               = mempty,
     ghcOptDylibName          = mempty,
@@ -416,6 +462,7 @@ instance Monoid GhcOptions where
     ghcOptInputFiles         = combine ghcOptInputFiles,
     ghcOptInputModules       = combine ghcOptInputModules,
     ghcOptOutputFile         = combine ghcOptOutputFile,
+    ghcOptOutputDynFile      = combine ghcOptOutputDynFile,
     ghcOptSourcePathClear    = combine ghcOptSourcePathClear,
     ghcOptSourcePath         = combine ghcOptSourcePath,
     ghcOptPackageName        = combine ghcOptPackageName,
@@ -428,6 +475,7 @@ instance Monoid GhcOptions where
     ghcOptLinkOptions        = combine ghcOptLinkOptions,
     ghcOptLinkFrameworks     = combine ghcOptLinkFrameworks,
     ghcOptNoLink             = combine ghcOptNoLink,
+    ghcOptLinkNoHsMain       = combine ghcOptLinkNoHsMain,
     ghcOptCcOptions          = combine ghcOptCcOptions,
     ghcOptCppOptions         = combine ghcOptCppOptions,
     ghcOptCppIncludePath     = combine ghcOptCppIncludePath,
@@ -439,13 +487,17 @@ instance Monoid GhcOptions where
     ghcOptOptimisation       = combine ghcOptOptimisation,
     ghcOptProfilingMode      = combine ghcOptProfilingMode,
     ghcOptSplitObjs          = combine ghcOptSplitObjs,
+    ghcOptNumJobs            = combine ghcOptNumJobs,
     ghcOptGHCiScripts        = combine ghcOptGHCiScripts,
     ghcOptHiSuffix           = combine ghcOptHiSuffix,
     ghcOptObjSuffix          = combine ghcOptObjSuffix,
+    ghcOptDynHiSuffix        = combine ghcOptDynHiSuffix,
+    ghcOptDynObjSuffix       = combine ghcOptDynObjSuffix,
     ghcOptHiDir              = combine ghcOptHiDir,
     ghcOptObjDir             = combine ghcOptObjDir,
+    ghcOptOutputDir          = combine ghcOptOutputDir,
     ghcOptStubDir            = combine ghcOptStubDir,
-    ghcOptDynamic            = combine ghcOptDynamic,
+    ghcOptDynLinkMode        = combine ghcOptDynLinkMode,
     ghcOptShared             = combine ghcOptShared,
     ghcOptFPic               = combine ghcOptFPic,
     ghcOptDylibName          = combine ghcOptDylibName,

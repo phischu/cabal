@@ -3,43 +3,13 @@
 -- Module      :  Distribution.Simple.NHC
 -- Copyright   :  Isaac Jones 2003-2006
 --                Duncan Coutts 2009
+-- License     :  BSD3
 --
 -- Maintainer  :  cabal-devel@haskell.org
 -- Portability :  portable
 --
 -- This module contains most of the NHC-specific code for configuring, building
 -- and installing packages.
-
-{- Copyright (c) 2003-2005, Isaac Jones
-All rights reserved.
-
-Redistribution and use in source and binary forms, with or without
-modification, are permitted provided that the following conditions are
-met:
-
-    * Redistributions of source code must retain the above copyright
-      notice, this list of conditions and the following disclaimer.
-
-    * Redistributions in binary form must reproduce the above
-      copyright notice, this list of conditions and the following
-      disclaimer in the documentation and/or other materials provided
-      with the distribution.
-
-    * Neither the name of Isaac Jones nor the names of other
-      contributors may be used to endorse or promote products derived
-      from this software without specific prior written permission.
-
-THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. -}
 
 module Distribution.Simple.NHC (
     configure,
@@ -52,7 +22,7 @@ module Distribution.Simple.NHC (
 
 import Distribution.Package
          ( PackageName, PackageIdentifier(..), InstalledPackageId(..)
-         , packageId, packageName )
+         , packageName )
 import Distribution.InstalledPackageInfo
          ( InstalledPackageInfo
          , InstalledPackageInfo_( InstalledPackageInfo, installedPackageId
@@ -98,18 +68,20 @@ import System.Directory
          ( doesFileExist, doesDirectoryExist, getDirectoryContents
          , removeFile, getHomeDirectory )
 
-import Data.Char ( toLower )
-import Data.List ( nub )
-import Data.Maybe    ( catMaybes )
-import Data.Monoid   ( Monoid(..) )
-import Control.Monad ( when, unless )
+import Data.Char               ( toLower )
+import Data.List               ( nub )
+import Data.Maybe              ( catMaybes )
+import qualified Data.Map as M ( empty )
+import Data.Monoid             ( Monoid(..) )
+import Control.Monad           ( when, unless )
 import Distribution.Compat.Exception
+import Distribution.System ( Platform )
 
 -- -----------------------------------------------------------------------------
 -- Configuring
 
 configure :: Verbosity -> Maybe FilePath -> Maybe FilePath
-          -> ProgramConfiguration -> IO (Compiler, ProgramConfiguration)
+          -> ProgramConfiguration -> IO (Compiler, Maybe Platform, ProgramConfiguration)
 configure verbosity hcPath _hcPkgPath conf = do
 
   (_nhcProg, nhcVersion, conf') <-
@@ -132,9 +104,11 @@ configure verbosity hcPath _hcPkgPath conf = do
   let comp = Compiler {
         compilerId         = CompilerId NHC nhcVersion,
         compilerLanguages  = nhcLanguages,
-        compilerExtensions     = nhcLanguageExtensions
+        compilerExtensions = nhcLanguageExtensions,
+        compilerProperties = M.empty
       }
-  return (comp, conf'''')
+      compPlatform = Nothing
+  return (comp, compPlatform,  conf'''')
 
 nhcLanguages :: [(Language, Flag)]
 nhcLanguages = [(Haskell98, "-98")]
@@ -285,6 +259,10 @@ setInstalledPackageId pkginfo = pkginfo
 buildLib :: Verbosity -> PackageDescription -> LocalBuildInfo
                       -> Library            -> ComponentLocalBuildInfo -> IO ()
 buildLib verbosity pkg_descr lbi lib clbi = do
+  libName <- case componentLibraries clbi of
+             [libName] -> return libName
+             [] -> die "No library name found when building library"
+             _  -> die "Multiple library names found when building library"
   let conf = withPrograms lbi
       Just nhcProg = lookupProgram nhcProgram conf
   let bi = libBuildInfo lib
@@ -325,7 +303,7 @@ buildLib verbosity pkg_descr lbi lib clbi = do
   info verbosity "Linking..."
   let --cObjs = [ targetDir </> cFile `replaceExtension` objExtension
       --        | cFile <- cSources bi ]
-      libFilePath = targetDir </> mkLibName (packageId pkg_descr)
+      libFilePath = targetDir </> mkLibName libName
       hObjs = [ targetDir </> ModuleName.toFilePath m <.> objExtension
               | m <- modules ]
 
@@ -414,11 +392,15 @@ installLib    :: Verbosity -- ^verbosity
               -> FilePath  -- ^Build location
               -> PackageIdentifier
               -> Library
+              -> ComponentLocalBuildInfo
               -> IO ()
-installLib verbosity pref buildPref pkgid lib
+installLib verbosity pref buildPref _pkgid lib clbi
     = do let bi = libBuildInfo lib
              modules = exposedModules lib ++ otherModules bi
          findModuleFiles [buildPref] ["hi"] modules
            >>= installOrdinaryFiles verbosity pref
-         let libName = mkLibName pkgid
-         installOrdinaryFile verbosity (buildPref </> libName) (pref </> libName)
+         let libNames = map mkLibName (componentLibraries clbi)
+             installLib' libName = installOrdinaryFile verbosity
+                                                       (buildPref </> libName)
+                                                       (pref </> libName)
+         mapM_ installLib' libNames

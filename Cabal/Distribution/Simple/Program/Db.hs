@@ -32,6 +32,9 @@ module Distribution.Simple.Program.Db (
     addKnownPrograms,
     lookupKnownProgram,
     knownPrograms,
+    getProgramSearchPath,
+    setProgramSearchPath,
+    modifyProgramSearchPath,
     userSpecifyPath,
     userSpecifyPaths,
     userMaybeSpecifyPath,
@@ -40,6 +43,7 @@ module Distribution.Simple.Program.Db (
     userSpecifiedArgs,
     lookupProgram,
     updateProgram,
+    configuredPrograms,
 
     -- ** Query and manipulate the program db
     configureProgram,
@@ -52,10 +56,13 @@ module Distribution.Simple.Program.Db (
 
 import Distribution.Simple.Program.Types
          ( Program(..), ProgArg, ConfiguredProgram(..), ProgramLocation(..) )
+import Distribution.Simple.Program.Find
+         ( ProgramSearchPath, defaultProgramSearchPath
+         , findProgramOnSearchPath, programSearchPathAsPATHVar )
 import Distribution.Simple.Program.Builtin
          ( builtinPrograms )
 import Distribution.Simple.Utils
-         ( die, findProgramLocation )
+         ( die, doesExecutableExist )
 import Distribution.Version
          ( Version, VersionRange, isAnyVersion, withinRange )
 import Distribution.Text
@@ -70,9 +77,6 @@ import Data.Maybe
 import qualified Data.Map as Map
 import Control.Monad
          ( join, foldM )
-import System.Directory
-         ( doesFileExist )
-
 
 -- ------------------------------------------------------------
 -- * Programs database
@@ -88,6 +92,7 @@ import System.Directory
 -- 'Program' but also any user-provided arguments and location for the program.
 data ProgramDb = ProgramDb {
         unconfiguredProgs :: UnconfiguredProgs,
+        progSearchPath    :: ProgramSearchPath,
         configuredProgs   :: ConfiguredProgs
     }
 
@@ -97,8 +102,7 @@ type ConfiguredProgs     = Map.Map String ConfiguredProgram
 
 
 emptyProgramDb :: ProgramDb
-emptyProgramDb = ProgramDb Map.empty Map.empty
-
+emptyProgramDb = ProgramDb Map.empty defaultProgramSearchPath Map.empty
 
 defaultProgramDb :: ProgramDb
 defaultProgramDb = restoreProgramDb builtinPrograms emptyProgramDb
@@ -166,6 +170,31 @@ knownPrograms conf =
   [ (p,p') | (p,_,_) <- Map.elems (unconfiguredProgs conf)
            , let p' = Map.lookup (programName p) (configuredProgs conf) ]
 
+-- | Get the current 'ProgramSearchPath' used by the 'ProgramDb'.
+-- This is the default list of locations where programs are looked for when
+-- configuring them. This can be overridden for specific programs (with
+-- 'userSpecifyPath'), and specific known programs can modify or ignore this
+-- search path in their own configuration code.
+--
+getProgramSearchPath :: ProgramDb -> ProgramSearchPath
+getProgramSearchPath = progSearchPath
+
+-- | Change the current 'ProgramSearchPath' used by the 'ProgramDb'.
+-- This will affect programs that are configured from here on, so you
+-- should usually set it before configuring any programs.
+--
+setProgramSearchPath :: ProgramSearchPath -> ProgramDb -> ProgramDb
+setProgramSearchPath searchpath db = db { progSearchPath = searchpath }
+
+-- | Modify the current 'ProgramSearchPath' used by the 'ProgramDb'.
+-- This will affect programs that are configured from here on, so you
+-- should usually modify it before configuring any programs.
+--
+modifyProgramSearchPath :: (ProgramSearchPath -> ProgramSearchPath)
+                        -> ProgramDb
+                        -> ProgramDb
+modifyProgramSearchPath f db =
+  setProgramSearchPath (f $ getProgramSearchPath db) db
 
 -- |User-specify this path.  Basically override any path information
 -- for this program in the configuration. If it's not a known
@@ -248,12 +277,16 @@ updateProgram prog = updateConfiguredProgs $
   Map.insert (programId prog) prog
 
 
+-- | List all configured programs.
+configuredPrograms :: ProgramDb -> [ConfiguredProgram]
+configuredPrograms = Map.elems . configuredProgs
+
 -- ---------------------------
 -- Configuring known programs
 
 -- | Try to configure a specific program. If the program is already included in
--- the colleciton of unconfigured programs then we use any user-supplied
--- location and arguments. If the program gets configured sucessfully it gets
+-- the collection of unconfigured programs then we use any user-supplied
+-- location and arguments. If the program gets configured successfully it gets
 -- added to the configured collection.
 --
 -- Note that it is not a failure if the program cannot be configured. It's only
@@ -272,31 +305,32 @@ configureProgram :: Verbosity
 configureProgram verbosity prog conf = do
   let name = programName prog
   maybeLocation <- case userSpecifiedPath prog conf of
-    Nothing   -> programFindLocation prog verbosity
+    Nothing   -> programFindLocation prog verbosity (progSearchPath conf)
              >>= return . fmap FoundOnSystem
     Just path -> do
-      absolute <- doesFileExist path
+      absolute <- doesExecutableExist path
       if absolute
         then return (Just (UserSpecified path))
-        else findProgramLocation verbosity path
+        else findProgramOnSearchPath verbosity (progSearchPath conf) path
          >>= maybe (die notFound) (return . Just . UserSpecified)
-      where notFound = "Cannot find the program '" ++ name ++ "' at '"
-                     ++ path ++ "' or on the path"
+      where notFound = "Cannot find the program '" ++ name
+                     ++ "'. User-specified path '"
+                     ++ path ++ "' does not refer to an executable and "
+                     ++ "the program is not on the system path."
   case maybeLocation of
     Nothing -> return conf
     Just location -> do
       version <- programFindVersion prog verbosity (locationPath location)
+      newPath <- programSearchPathAsPATHVar (progSearchPath conf)
       let configuredProg        = ConfiguredProgram {
             programId           = name,
             programVersion      = version,
             programDefaultArgs  = [],
             programOverrideArgs = userSpecifiedArgs prog conf,
+            programOverrideEnv  = [("PATH", Just newPath)],
             programLocation     = location
           }
-      extraArgs <- programPostConf prog verbosity configuredProg
-      let configuredProg'       = configuredProg {
-            programDefaultArgs  = extraArgs
-          }
+      configuredProg' <- programPostConf prog verbosity configuredProg
       return (updateConfiguredProgs (Map.insert name configuredProg') conf)
 
 
@@ -360,8 +394,8 @@ requireProgram verbosity prog conf = do
     Nothing             -> die notFound
     Just configuredProg -> return (configuredProg, conf')
 
-  where notFound       = "The program " ++ programName prog
-                      ++ " is required but it could not be found."
+  where notFound       = "The program '" ++ programName prog
+                      ++ "' is required but it could not be found."
 
 
 -- | Check that a program is configured and available to be run.
@@ -393,15 +427,15 @@ requireProgramVersion verbosity prog range conf = do
           | otherwise                 -> die (badVersion version location)
         Nothing                       -> die (noVersion location)
 
-  where notFound       = "The program "
-                      ++ programName prog ++ versionRequirement
+  where notFound       = "The program '"
+                      ++ programName prog ++ "'" ++ versionRequirement
                       ++ " is required but it could not be found."
-        badVersion v l = "The program "
-                      ++ programName prog ++ versionRequirement
+        badVersion v l = "The program '"
+                      ++ programName prog ++ "'" ++ versionRequirement
                       ++ " is required but the version found at "
                       ++ locationPath l ++ " is version " ++ display v
-        noVersion l    = "The program "
-                      ++ programName prog ++ versionRequirement
+        noVersion l    = "The program '"
+                      ++ programName prog ++ "'" ++ versionRequirement
                       ++ " is required but the version of "
                       ++ locationPath l ++ " could not be determined."
         versionRequirement

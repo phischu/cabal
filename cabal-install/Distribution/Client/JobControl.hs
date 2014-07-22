@@ -27,9 +27,9 @@ module Distribution.Client.JobControl (
   ) where
 
 import Control.Monad
-import Control.Concurrent
-import Control.Exception
-
+import Control.Concurrent hiding (QSem, newQSem, waitQSem, signalQSem)
+import Control.Exception (SomeException, bracket_, mask, throw, try)
+import Distribution.Client.Compat.Semaphore
 
 data JobControl m a = JobControl {
        spawnJob    :: m a -> m (),
@@ -69,7 +69,6 @@ newParallelJobControl = do
     collect :: MVar (Either SomeException a) -> IO a
     collect resultVar =
       takeMVar resultVar >>= either throw return
-
 
 data JobLimit = JobLimit QSem
 

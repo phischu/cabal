@@ -8,7 +8,8 @@
 -- Stability   :  provisional
 -- Portability :  portable
 --
--- Utilities for handling saved state such as known packages, known servers and downloaded packages.
+-- Utilities for handling saved state such as known packages, known servers and
+-- downloaded packages.
 -----------------------------------------------------------------------------
 module Distribution.Client.Config (
     SavedConfig(..),
@@ -21,29 +22,39 @@ module Distribution.Client.Config (
     defaultCabalDir,
     defaultConfigFile,
     defaultCacheDir,
+    defaultCompiler,
     defaultLogsDir,
-  ) where
+    defaultUserInstall,
 
+    baseSavedConfig,
+    commentSavedConfig,
+    initialSavedConfig,
+    configFieldDescriptions,
+    haddockFlagsFields,
+    installDirsFields,
+    withProgramsFields,
+    withProgramOptionsFields
+  ) where
 
 import Distribution.Client.Types
          ( RemoteRepo(..), Username(..), Password(..) )
 import Distribution.Client.BuildReports.Types
          ( ReportLevel(..) )
 import Distribution.Client.Setup
-         ( GlobalFlags(..), globalCommand
+         ( GlobalFlags(..), globalCommand, defaultGlobalFlags
          , ConfigExFlags(..), configureExOptions, defaultConfigExFlags
          , InstallFlags(..), installOptions, defaultInstallFlags
          , UploadFlags(..), uploadCommand
          , ReportFlags(..), reportCommand
          , showRepo, parseRepo )
-import Distribution.Client.Utils
-         ( numberOfProcessors )
 
 import Distribution.Simple.Compiler
          ( OptimisationLevel(..) )
 import Distribution.Simple.Setup
          ( ConfigFlags(..), configureOptions, defaultConfigFlags
+         , HaddockFlags(..), haddockOptions, defaultHaddockFlags
          , installDirsOptions
+         , programConfigurationPaths', programConfigurationOptions
          , Flag(..), toFlag, flagToMaybe, fromFlagOrDefault )
 import Distribution.Simple.InstallDirs
          ( InstallDirs(..), defaultInstallDirs
@@ -54,6 +65,8 @@ import Distribution.ParseUtils
          , locatedErrorMsg, showPWarning
          , readFields, warning, lineNo
          , simpleField, listField, parseFilePathQ, parseTokenQ )
+import Distribution.Client.ParseUtils
+         ( parseFields, ppFields, ppSection )
 import qualified Distribution.ParseUtils as ParseUtils
          ( Field(..) )
 import qualified Distribution.Text as Text
@@ -77,24 +90,23 @@ import Data.Maybe
 import Data.Monoid
          ( Monoid(..) )
 import Control.Monad
-         ( when, foldM, liftM )
-import qualified Data.Map as Map
+         ( unless, foldM, liftM )
 import qualified Distribution.Compat.ReadP as Parse
          ( option )
 import qualified Text.PrettyPrint as Disp
-         ( Doc, render, text, colon, vcat, empty, isEmpty, nest )
+         ( render, text, empty )
 import Text.PrettyPrint
-         ( (<>), (<+>), ($$), ($+$) )
+         ( ($+$) )
 import System.Directory
-         ( createDirectoryIfMissing, getAppUserDataDirectory )
+         ( createDirectoryIfMissing, getAppUserDataDirectory, renameFile )
 import Network.URI
          ( URI(..), URIAuth(..) )
 import System.FilePath
-         ( (</>), takeDirectory )
-import System.Environment
-         ( getEnvironment )
+         ( (<.>), (</>), takeDirectory )
 import System.IO.Error
          ( isDoesNotExistError )
+import Distribution.Compat.Environment
+         ( getEnvironment )
 import Distribution.Compat.Exception
          ( catchIO )
 
@@ -110,7 +122,8 @@ data SavedConfig = SavedConfig {
     savedUserInstallDirs   :: InstallDirs (Flag PathTemplate),
     savedGlobalInstallDirs :: InstallDirs (Flag PathTemplate),
     savedUploadFlags       :: UploadFlags,
-    savedReportFlags       :: ReportFlags
+    savedReportFlags       :: ReportFlags,
+    savedHaddockFlags      :: HaddockFlags
   }
 
 instance Monoid SavedConfig where
@@ -122,7 +135,8 @@ instance Monoid SavedConfig where
     savedUserInstallDirs   = mempty,
     savedGlobalInstallDirs = mempty,
     savedUploadFlags       = mempty,
-    savedReportFlags       = mempty
+    savedReportFlags       = mempty,
+    savedHaddockFlags      = mempty
   }
   mappend a b = SavedConfig {
     savedGlobalFlags       = combine savedGlobalFlags,
@@ -132,7 +146,8 @@ instance Monoid SavedConfig where
     savedUserInstallDirs   = combine savedUserInstallDirs,
     savedGlobalInstallDirs = combine savedGlobalInstallDirs,
     savedUploadFlags       = combine savedUploadFlags,
-    savedReportFlags       = combine savedReportFlags
+    savedReportFlags       = combine savedReportFlags,
+    savedHaddockFlags      = combine savedHaddockFlags
   }
     where combine field = field a `mappend` field b
 
@@ -194,16 +209,20 @@ initialSavedConfig = do
   cacheDir   <- defaultCacheDir
   logsDir    <- defaultLogsDir
   worldFile  <- defaultWorldFile
+  extraPath  <- defaultExtraPath
   return mempty {
     savedGlobalFlags     = mempty {
       globalCacheDir     = toFlag cacheDir,
       globalRemoteRepos  = [defaultRemoteRepo],
       globalWorldFile    = toFlag worldFile
     },
+    savedConfigureFlags  = mempty {
+      configProgramPathExtra = extraPath
+    },
     savedInstallFlags    = mempty {
       installSummaryFile = [toPathTemplate (logsDir </> "build.log")],
       installBuildReports= toFlag AnonymousReports,
-      installNumJobs     = toFlag (Just numberOfProcessors)
+      installNumJobs     = toFlag Nothing
     }
   }
 
@@ -233,6 +252,11 @@ defaultWorldFile = do
   dir <- defaultCabalDir
   return $ dir </> "world"
 
+defaultExtraPath :: IO [FilePath]
+defaultExtraPath = do
+  dir <- defaultCabalDir
+  return [dir </> "bin"]
+
 defaultCompiler :: CompilerFlavor
 defaultCompiler = fromMaybe GHC defaultCompilerFlavor
 
@@ -259,7 +283,7 @@ loadConfig verbosity configFileFlag userInstallFlag = addBaseConf $ do
         ("default config file",  Just `liftM` defaultConfigFile) ]
 
       getSource [] = error "no config file path candidate found."
-      getSource ((msg,action): xs) = 
+      getSource ((msg,action): xs) =
                         action >>= maybe (getSource xs) (return . (,) msg)
 
   (source, configFile) <- getSource sources
@@ -274,15 +298,15 @@ loadConfig verbosity configFileFlag userInstallFlag = addBaseConf $ do
       writeConfigFile configFile commentConf initialConf
       return initialConf
     Just (ParseOk ws conf) -> do
-      when (not $ null ws) $ warn verbosity $
+      unless (null ws) $ warn verbosity $
         unlines (map (showPWarning configFile) ws)
       return conf
     Just (ParseFailed err) -> do
       let (line, msg) = locatedErrorMsg err
       warn verbosity $
           "Error parsing config file " ++ configFile
-        ++ maybe "" (\n -> ":" ++ show n) line ++ ":\n" ++ msg
-      warn verbosity $ "Using default configuration."
+        ++ maybe "" (\n -> ':' : show n) line ++ ":\n" ++ msg
+      warn verbosity "Using default configuration."
       initialSavedConfig
 
   where
@@ -303,8 +327,10 @@ readConfigFile initial file = handleNotExists $
 
 writeConfigFile :: FilePath -> SavedConfig -> SavedConfig -> IO ()
 writeConfigFile file comments vals = do
+  let tmpFile = file <.> "tmp"
   createDirectoryIfMissing True (takeDirectory file)
-  writeFile file $ explanation ++ showConfigWithComments comments vals ++ "\n"
+  writeFile tmpFile $ explanation ++ showConfigWithComments comments vals ++ "\n"
+  renameFile tmpFile file
   where
     explanation = unlines
       ["-- This is the configuration file for the 'cabal' command line tool."
@@ -328,7 +354,7 @@ commentSavedConfig = do
   userInstallDirs   <- defaultInstallDirs defaultCompiler True True
   globalInstallDirs <- defaultInstallDirs defaultCompiler False True
   return SavedConfig {
-    savedGlobalFlags       = commandDefaultFlags globalCommand,
+    savedGlobalFlags       = defaultGlobalFlags,
     savedInstallFlags      = defaultInstallFlags,
     savedConfigureExFlags  = defaultConfigExFlags,
     savedConfigureFlags    = (defaultConfigFlags defaultProgramConfiguration) {
@@ -337,7 +363,8 @@ commentSavedConfig = do
     savedUserInstallDirs   = fmap toFlag userInstallDirs,
     savedGlobalInstallDirs = fmap toFlag globalInstallDirs,
     savedUploadFlags       = commandDefaultFlags uploadCommand,
-    savedReportFlags       = commandDefaultFlags reportCommand
+    savedReportFlags       = commandDefaultFlags reportCommand,
+    savedHaddockFlags      = defaultHaddockFlags
   }
 
 -- | All config file fields.
@@ -347,11 +374,12 @@ configFieldDescriptions =
 
      toSavedConfig liftGlobalFlag
        (commandOptions globalCommand ParseArgs)
-       ["version", "numeric-version", "config-file"] []
+       ["version", "numeric-version", "config-file", "sandbox-config-file"] []
 
   ++ toSavedConfig liftConfigFlag
        (configureOptions ParseArgs)
-       (["builddir", "configure-option", "constraint"] ++ map fieldName installDirsFields)
+       (["builddir", "configure-option", "constraint", "dependency"]
+        ++ map fieldName installDirsFields)
 
         --FIXME: this is only here because viewAsFieldDescr gives us a parser
         -- that only recognises 'ghc' etc, the case-sensitive flag names, not
@@ -392,7 +420,7 @@ configFieldDescriptions =
 
   ++ toSavedConfig liftInstallFlag
        (installOptions ParseArgs)
-       ["dry-run", "only"] []
+       ["dry-run", "only", "only-dependencies", "dependencies-only"] []
 
   ++ toSavedConfig liftUploadFlag
        (commandOptions uploadCommand ParseArgs)
@@ -401,7 +429,7 @@ configFieldDescriptions =
   ++ toSavedConfig liftReportFlag
        (commandOptions reportCommand ParseArgs)
        ["verbose", "username", "password"] []
-       --FIXME: this is a hack, hiding the username and password.
+       --FIXME: this is a hack, hiding the user name and password.
        -- But otherwise it masks the upload ones. Either need to
        -- share the options or make then distinct. In any case
        -- they should probably be per-server.
@@ -487,28 +515,64 @@ parseConfig initial = \str -> do
   config <- parse others
   let user0   = savedUserInstallDirs config
       global0 = savedGlobalInstallDirs config
-  (user, global) <- foldM parseSections (user0, global0) knownSections
+  (haddockFlags, user, global, paths, args) <-
+    foldM parseSections
+          (savedHaddockFlags config, user0, global0, [], [])
+          knownSections
   return config {
+    savedConfigureFlags    = (savedConfigureFlags config) {
+       configProgramPaths  = paths,
+       configProgramArgs   = args
+       },
+    savedHaddockFlags      = haddockFlags {
+       haddockProgramPaths = paths,
+       haddockProgramArgs  = args
+       },
     savedUserInstallDirs   = user,
     savedGlobalInstallDirs = global
   }
 
   where
-    isKnownSection (ParseUtils.Section _ "install-dirs" _ _) = True
-    isKnownSection _                                          = False
+    isKnownSection (ParseUtils.Section _ "haddock" _ _)                 = True
+    isKnownSection (ParseUtils.Section _ "install-dirs" _ _)            = True
+    isKnownSection (ParseUtils.Section _ "program-locations" _ _)       = True
+    isKnownSection (ParseUtils.Section _ "program-default-options" _ _) = True
+    isKnownSection _                                                    = False
 
     parse = parseFields (configFieldDescriptions
                       ++ deprecatedFieldDescriptions) initial
 
-    parseSections accum@(u,g) (ParseUtils.Section _ "install-dirs" name fs)
-      | name' == "user"   = do u' <- parseFields installDirsFields u fs
-                               return (u', g)
-      | name' == "global" = do g' <- parseFields installDirsFields g fs
-                               return (u, g')
+    parseSections accum@(h,u,g,p,a)
+                 (ParseUtils.Section _ "haddock" name fs)
+      | name == ""        = do h' <- parseFields haddockFlagsFields h fs
+                               return (h', u, g, p, a)
       | otherwise         = do
-          warning "The install-paths section should be for 'user' or 'global'"
+          warning "The 'haddock' section should be unnamed"
+          return accum
+    parseSections accum@(h,u,g,p,a)
+                  (ParseUtils.Section _ "install-dirs" name fs)
+      | name' == "user"   = do u' <- parseFields installDirsFields u fs
+                               return (h, u', g, p, a)
+      | name' == "global" = do g' <- parseFields installDirsFields g fs
+                               return (h, u, g', p, a)
+      | otherwise         = do
+          warning "The 'install-paths' section should be for 'user' or 'global'"
           return accum
       where name' = lowercase name
+    parseSections accum@(h,u,g,p,a)
+                 (ParseUtils.Section _ "program-locations" name fs)
+      | name == ""        = do p' <- parseFields withProgramsFields p fs
+                               return (h, u, g, p', a)
+      | otherwise         = do
+          warning "The 'program-locations' section should be unnamed"
+          return accum
+    parseSections accum@(h, u, g, p, a)
+                  (ParseUtils.Section _ "program-default-options" name fs)
+      | name == ""        = do a' <- parseFields withProgramOptionsFields a fs
+                               return (h, u, g, p, a')
+      | otherwise         = do
+          warning "The 'program-default-options' section should be unnamed"
+          return accum
     parseSections accum f = do
       warning $ "Unrecognized stanza on line " ++ show (lineNo f)
       return accum
@@ -518,52 +582,53 @@ showConfig = showConfigWithComments mempty
 
 showConfigWithComments :: SavedConfig -> SavedConfig -> String
 showConfigWithComments comment vals = Disp.render $
-      ppFields configFieldDescriptions comment vals
+      ppFields configFieldDescriptions mcomment vals
+  $+$ Disp.text ""
+  $+$ ppSection "haddock" "" haddockFlagsFields
+                (fmap savedHaddockFlags mcomment) (savedHaddockFlags vals)
   $+$ Disp.text ""
   $+$ installDirsSection "user"   savedUserInstallDirs
   $+$ Disp.text ""
   $+$ installDirsSection "global" savedGlobalInstallDirs
+  $+$ Disp.text ""
+  $+$ configFlagsSection "program-locations" withProgramsFields
+                         configProgramPaths
+  $+$ Disp.text ""
+  $+$ configFlagsSection "program-default-options" withProgramOptionsFields
+                         configProgramArgs
   where
+    mcomment = Just comment
     installDirsSection name field =
       ppSection "install-dirs" name installDirsFields
-                (field comment) (field vals)
+                (fmap field mcomment) (field vals)
+    configFlagsSection name fields field =
+      ppSection name "" fields
+               (fmap (field . savedConfigureFlags) mcomment)
+               ((field . savedConfigureFlags) vals)
 
-------------------------
--- * Parsing utils
---
-
---FIXME: replace this with something better in Cabal-1.5
-parseFields :: [FieldDescr a] -> a -> [ParseUtils.Field] -> ParseResult a
-parseFields fields initial = foldM setField initial
-  where
-    fieldMap = Map.fromList
-      [ (name, f) | f@(FieldDescr name _ _) <- fields ]
-    setField accum (ParseUtils.F line name value) = case Map.lookup name fieldMap of
-      Just (FieldDescr _ _ set) -> set line value accum
-      Nothing -> do
-        warning $ "Unrecognized field " ++ name ++ " on line " ++ show line
-        return accum
-    setField accum f = do
-      warning $ "Unrecognized stanza on line " ++ show (lineNo f)
-      return accum
-
--- | This is a customised version of the function from Cabal that also prints
--- default values for empty fields as comments.
---
-ppFields :: [FieldDescr a] -> a -> a -> Disp.Doc
-ppFields fields def cur = Disp.vcat [ ppField name (getter def) (getter cur)
-                                    | FieldDescr name getter _ <- fields]
-
-ppField :: String -> Disp.Doc -> Disp.Doc -> Disp.Doc
-ppField name def cur
-  | Disp.isEmpty cur = Disp.text "--" <+> Disp.text name <> Disp.colon <+> def
-  | otherwise        =                    Disp.text name <> Disp.colon <+> cur
-
-ppSection :: String -> String -> [FieldDescr a] -> a -> a -> Disp.Doc
-ppSection name arg fields def cur =
-     Disp.text name <+> Disp.text arg
-  $$ Disp.nest 2 (ppFields fields def cur)
-
+-- | Fields for the 'install-dirs' sections.
 installDirsFields :: [FieldDescr (InstallDirs (Flag PathTemplate))]
 installDirsFields = map viewAsFieldDescr installDirsOptions
 
+-- | Fields for the 'haddock' section.
+haddockFlagsFields :: [FieldDescr HaddockFlags]
+haddockFlagsFields = [ field
+                     | opt <- haddockOptions ParseArgs
+                     , let field = viewAsFieldDescr opt
+                           name  = fieldName field
+                     , name `notElem` exclusions ]
+  where
+    exclusions = ["verbose", "builddir"]
+
+-- | Fields for the 'program-locations' section.
+withProgramsFields :: [FieldDescr [(String, FilePath)]]
+withProgramsFields =
+  map viewAsFieldDescr $
+  programConfigurationPaths' (++ "-location") defaultProgramConfiguration
+                             ParseArgs id (++)
+
+-- | Fields for the 'program-default-options' section.
+withProgramOptionsFields :: [FieldDescr [(String, [String])]]
+withProgramOptionsFields =
+  map viewAsFieldDescr $
+  programConfigurationOptions defaultProgramConfiguration ParseArgs id (++)

@@ -3,42 +3,13 @@
 -- Module      :  Distribution.Simple.BuildPaths
 -- Copyright   :  Isaac Jones 2003-2004,
 --                Duncan Coutts 2008
+-- License     :  BSD3
 --
 -- Maintainer  :  cabal-devel@haskell.org
 -- Portability :  portable
 --
 -- A bunch of dirs, paths and file names used for intermediate build steps.
 --
-
-{- All rights reserved.
-
-Redistribution and use in source and binary forms, with or without
-modification, are permitted provided that the following conditions are
-met:
-
-    * Redistributions of source code must retain the above copyright
-      notice, this list of conditions and the following disclaimer.
-
-    * Redistributions in binary form must reproduce the above
-      copyright notice, this list of conditions and the following
-      disclaimer in the documentation and/or other materials provided
-      with the distribution.
-
-    * Neither the name of Isaac Jones nor the names of other
-      contributors may be used to endorse or promote products derived
-      from this software without specific prior written permission.
-
-THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. -}
 
 module Distribution.Simple.BuildPaths (
     defaultDistPref, srcPref,
@@ -63,13 +34,14 @@ module Distribution.Simple.BuildPaths (
 import System.FilePath ((</>), (<.>))
 
 import Distribution.Package
-         ( PackageIdentifier, packageName )
+         ( packageName )
 import Distribution.ModuleName (ModuleName)
 import qualified Distribution.ModuleName as ModuleName
 import Distribution.Compiler
          ( CompilerId(..) )
 import Distribution.PackageDescription (PackageDescription)
-import Distribution.Simple.LocalBuildInfo (LocalBuildInfo(buildDir))
+import Distribution.Simple.LocalBuildInfo
+         ( LocalBuildInfo(buildDir), LibraryName(..) )
 import Distribution.Simple.Setup (defaultDistPref)
 import Distribution.Text
          ( display )
@@ -109,18 +81,18 @@ haddockName pkg_descr = display (packageName pkg_descr) <.> "haddock"
 -- ---------------------------------------------------------------------------
 -- Library file names
 
-mkLibName :: PackageIdentifier -> String
-mkLibName lib = "libHS" ++ display lib <.> "a"
+mkLibName :: LibraryName -> String
+mkLibName (LibraryName lib) = "lib" ++ lib <.> "a"
 
-mkProfLibName :: PackageIdentifier -> String
-mkProfLibName lib =  "libHS" ++ display lib ++ "_p" <.> "a"
+mkProfLibName :: LibraryName -> String
+mkProfLibName (LibraryName lib) =  "lib" ++ lib ++ "_p" <.> "a"
 
 -- Implement proper name mangling for dynamical shared objects
 -- libHS<packagename>-<compilerFlavour><compilerVersion>
 -- e.g. libHSbase-2.1-ghc6.6.1.so
-mkSharedLibName :: PackageIdentifier -> CompilerId -> String
-mkSharedLibName lib (CompilerId compilerFlavor compilerVersion)
-  = "libHS" ++ display lib ++ "-" ++ comp <.> dllExtension
+mkSharedLibName :: CompilerId -> LibraryName -> String
+mkSharedLibName (CompilerId compilerFlavor compilerVersion) (LibraryName lib)
+  = "lib" ++ lib ++ "-" ++ comp <.> dllExtension
   where comp = display compilerFlavor ++ display compilerVersion
 
 -- ------------------------------------------------------------

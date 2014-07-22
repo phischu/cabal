@@ -2,45 +2,13 @@
 -- |
 -- Module      :  Distribution.Simple.JHC
 -- Copyright   :  Isaac Jones 2003-2006
+-- License     :  BSD3
 --
 -- Maintainer  :  cabal-devel@haskell.org
 -- Portability :  portable
 --
 -- This module contains most of the JHC-specific code for configuring, building
 -- and installing packages.
-
-{-
-Copyright (c) 2009, Henning Thielemann
-Copyright (c) 2003-2005, Isaac Jones
-All rights reserved.
-
-Redistribution and use in source and binary forms, with or without
-modification, are permitted provided that the following conditions are
-met:
-
-    * Redistributions of source code must retain the above copyright
-      notice, this list of conditions and the following disclaimer.
-
-    * Redistributions in binary form must reproduce the above
-      copyright notice, this list of conditions and the following
-      disclaimer in the documentation and/or other materials provided
-      with the distribution.
-
-    * Neither the name of Isaac Jones nor the names of other
-      contributors may be used to endorse or promote products derived
-      from this software without specific prior written permission.
-
-THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. -}
 
 module Distribution.Simple.JHC (
         configure, getInstalledPackages,
@@ -84,17 +52,21 @@ import Distribution.Text
          ( Text(parse), display )
 import Distribution.Compat.ReadP
     ( readP_to_S, string, skipSpaces )
+import Distribution.System ( Platform )
 
 import Data.List                ( nub )
 import Data.Char                ( isSpace )
+import qualified Data.Map as M  ( empty )
 import Data.Maybe               ( fromMaybe )
+
+import qualified Data.ByteString.Lazy.Char8 as BS.Char8
 
 
 -- -----------------------------------------------------------------------------
 -- Configuring
 
 configure :: Verbosity -> Maybe FilePath -> Maybe FilePath
-          -> ProgramConfiguration -> IO (Compiler, ProgramConfiguration)
+          -> ProgramConfiguration -> IO (Compiler, Maybe Platform, ProgramConfiguration)
 configure verbosity hcPath _hcPkgPath conf = do
 
   (jhcProg, _, conf') <- requireProgramVersion verbosity
@@ -105,9 +77,11 @@ configure verbosity hcPath _hcPkgPath conf = do
       comp = Compiler {
         compilerId             = CompilerId JHC version,
         compilerLanguages      = jhcLanguages,
-        compilerExtensions     = jhcLanguageExtensions
+        compilerExtensions     = jhcLanguageExtensions,
+        compilerProperties     = M.empty
       }
-  return (comp, conf')
+      compPlatform = Nothing
+  return (comp, compPlatform, conf')
 
 jhcLanguages :: [(Language, Flag)]
 jhcLanguages = [(Haskell98, "")]
@@ -161,7 +135,7 @@ buildLib verbosity pkg_descr lbi lib clbi = do
   let pkgid = display (packageId pkg_descr)
       pfile = buildDir lbi </> "jhc-pkg.conf"
       hlfile= buildDir lbi </> (pkgid ++ ".hl")
-  writeFileAtomic pfile $ jhcPkgConf pkg_descr
+  writeFileAtomic pfile . BS.Char8.pack $ jhcPkgConf pkg_descr
   rawSystemProgram verbosity jhcProg $
      ["--build-hl="++pfile, "-o", hlfile] ++
      args ++ map display (libModules lib)
@@ -218,4 +192,3 @@ installExe verb dest build_dir (progprefix,progsuffix) _ exe = do
         out   = (progprefix ++ exe_name ++ progsuffix) </> exeExtension
     createDirectoryIfMissingVerbose verb True dest
     installExecutableFile verb (build_dir </> src) (dest </> out)
-

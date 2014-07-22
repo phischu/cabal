@@ -1,9 +1,24 @@
 # trivial gitignore file
-
+.cabal-sandbox/
+cabal.sandbox.config
 cabal-dev/
 Cabal/dist/
+Cabal/tests/Setup
 cabal-install/dist/
+cabal-install/tests/PackageTests/*/dist/
 .hpc/
+*.hi
+*.o
+*.p_hi
+*.prof
+*.tix
+
+# editor temp files
+
+*#
+.#*
+*~
+.*.swp
 
 # GHC build
 
@@ -11,3 +26,8 @@ Cabal/GNUmakefile
 Cabal/dist-boot/
 Cabal/dist-install/
 Cabal/ghc.mk
+
+
+# TAGS files
+TAGS
+tags

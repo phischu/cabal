@@ -2,6 +2,7 @@
 -- |
 -- Module      :  Distribution.ParseUtils
 -- Copyright   :  (c) The University of Glasgow 2004
+-- License     :  BSD3
 --
 -- Maintainer  :  cabal-devel@haskell.org
 -- Portability :  portable
@@ -15,53 +16,25 @@
 -- many of the formats we get in various @.cabal@ file fields, like module
 -- names, comma separated lists etc.
 
-{- All rights reserved.
-
-Redistribution and use in source and binary forms, with or without
-modification, are permitted provided that the following conditions are
-met:
-
-    * Redistributions of source code must retain the above copyright
-      notice, this list of conditions and the following disclaimer.
-
-    * Redistributions in binary form must reproduce the above
-      copyright notice, this list of conditions and the following
-      disclaimer in the documentation and/or other materials provided
-      with the distribution.
-
-    * Neither the name of the University nor the names of other
-      contributors may be used to endorse or promote products derived
-      from this software without specific prior written permission.
-
-THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. -}
-
 -- This module is meant to be local-only to Distribution...
 
--- #hide
+{-# OPTIONS_HADDOCK hide #-}
 module Distribution.ParseUtils (
         LineNo, PError(..), PWarning(..), locatedErrorMsg, syntaxError, warning,
         runP, runE, ParseResult(..), catchParseError, parseFail, showPWarning,
         Field(..), fName, lineNo,
         FieldDescr(..), ppField, ppFields, readFields, readFieldsFlat,
-        showFields, showSingleNamedField, parseFields, parseFieldsFlat,
+        showFields, showSingleNamedField, showSimpleSingleNamedField,
+        parseFields, parseFieldsFlat,
         parseFilePathQ, parseTokenQ, parseTokenQ',
         parseModuleNameQ, parseBuildTool, parsePkgconfigDependency,
         parseOptVersion, parsePackageNameQ, parseVersionRangeQ,
         parseTestedWithQ, parseLicenseQ, parseLanguageQ, parseExtensionQ,
         parseSepList, parseCommaList, parseOptCommaList,
         showFilePath, showToken, showTestedWith, showFreeText, parseFreeText,
-        field, simpleField, listField, spaceListField, commaListField,
-        optsField, liftField, boolField, parseQuoted,
+        field, simpleField, listField, listFieldWithSep, spaceListField,
+        commaListField, commaListFieldWithSep, commaNewLineListField,
+        optsField, liftField, boolField, parseQuoted, indentWith,
 
         UnrecFieldParser, warnUnrec, ignoreUnrec,
   ) where
@@ -86,23 +59,25 @@ import Data.Char (isSpace, toLower, isAlphaNum, isDigit)
 import Data.Maybe       (fromMaybe)
 import Data.Tree as Tree (Tree(..), flatten)
 import qualified Data.Map as Map
-import Control.Monad (foldM)
+import Control.Monad (foldM, ap)
+import Control.Applicative (Applicative(..))
 import System.FilePath (normalise)
 import Data.List (sortBy)
 
 -- -----------------------------------------------------------------------------
 
-type LineNo = Int
+type LineNo    = Int
+type Separator = ([Doc] -> Doc)
 
-data PError = AmbigousParse String LineNo
+data PError = AmbiguousParse String LineNo
             | NoParse String LineNo
             | TabsError LineNo
             | FromString String (Maybe LineNo)
-        deriving Show
+        deriving (Eq, Show)
 
 data PWarning = PWarning String
               | UTFWarning LineNo String
-        deriving Show
+        deriving (Eq, Show)
 
 showPWarning :: FilePath -> PWarning -> String
 showPWarning fpath (PWarning msg) =
@@ -114,8 +89,17 @@ showPWarning fpath (UTFWarning line fname) =
 data ParseResult a = ParseFailed PError | ParseOk [PWarning] a
         deriving Show
 
+instance Functor ParseResult where
+        fmap _ (ParseFailed err) = ParseFailed err
+        fmap f (ParseOk ws x) = ParseOk ws $ f x
+
+instance Applicative ParseResult where
+        pure = return
+        (<*>) = ap
+
+
 instance Monad ParseResult where
-        return x = ParseOk [] x
+        return = ParseOk []
         ParseFailed err >>= _ = ParseFailed err
         ParseOk ws x >>= f = case f x of
                                ParseFailed err -> ParseFailed err
@@ -139,8 +123,8 @@ runP line fieldname p s =
     []  -> case [ x | (x,ys) <- results, all isSpace ys ] of
              [a] -> ParseOk (utf8Warnings line fieldname s) a
              []  -> ParseFailed (NoParse fieldname line)
-             _   -> ParseFailed (AmbigousParse fieldname line)
-    _   -> ParseFailed (AmbigousParse fieldname line)
+             _   -> ParseFailed (AmbiguousParse fieldname line)
+    _   -> ParseFailed (AmbiguousParse fieldname line)
   where results = readP_to_S p s
 
 runE :: LineNo -> String -> ReadE a -> String -> ParseResult a
@@ -157,10 +141,12 @@ utf8Warnings line fieldname s =
          , '\xfffd' `elem` l ]
 
 locatedErrorMsg :: PError -> (Maybe LineNo, String)
-locatedErrorMsg (AmbigousParse f n) = (Just n, "Ambiguous parse in field '"++f++"'.")
-locatedErrorMsg (NoParse f n)       = (Just n, "Parse of field '"++f++"' failed.")
-locatedErrorMsg (TabsError n)       = (Just n, "Tab used as indentation.")
-locatedErrorMsg (FromString s n)    = (n, s)
+locatedErrorMsg (AmbiguousParse f n) = (Just n,
+                                        "Ambiguous parse in field '"++f++"'.")
+locatedErrorMsg (NoParse f n)        = (Just n,
+                                        "Parse of field '"++f++"' failed.")
+locatedErrorMsg (TabsError n)        = (Just n, "Tab used as indentation.")
+locatedErrorMsg (FromString s n)     = (n, s)
 
 syntaxError :: LineNo -> String -> ParseResult a
 syntaxError n s = ParseFailed $ FromString s (Just n)
@@ -183,7 +169,7 @@ data FieldDescr a
         -- successful.  Otherwise, reports an error on line number @n@.
       }
 
-field :: String -> (a -> Doc) -> (ReadP a a) -> FieldDescr a
+field :: String -> (a -> Doc) -> ReadP a a -> FieldDescr a
 field name showF readF =
   FieldDescr name showF (\line val _st -> runP line name readF val)
 
@@ -191,7 +177,7 @@ field name showF readF =
 -- into a 'b'.
 liftField :: (b -> a) -> (a -> b -> b) -> FieldDescr a -> FieldDescr b
 liftField get set (FieldDescr name showF parseF)
- = FieldDescr name (\b -> showF (get b))
+ = FieldDescr name (showF . get)
         (\line str b -> do
             a <- parseF line str (get b)
             return (set a b))
@@ -199,41 +185,56 @@ liftField get set (FieldDescr name showF parseF)
 -- Parser combinator for simple fields.  Takes a field name, a pretty printer,
 -- a parser function, an accessor, and a setter, returns a FieldDescr over the
 -- compoid structure.
-simpleField :: String -> (a -> Doc) -> (ReadP a a)
+simpleField :: String -> (a -> Doc) -> ReadP a a
             -> (b -> a) -> (a -> b -> b) -> FieldDescr b
 simpleField name showF readF get set
   = liftField get set $ field name showF readF
 
-commaListField :: String -> (a -> Doc) -> (ReadP [a] a)
+commaListFieldWithSep :: Separator -> String -> (a -> Doc) -> ReadP [a] a
+                      -> (b -> [a]) -> ([a] -> b -> b) -> FieldDescr b
+commaListFieldWithSep separator name showF readF get set =
+   liftField get set' $
+     field name showF' (parseCommaList readF)
+   where
+     set' xs b = set (get b ++ xs) b
+     showF'    = separator . punctuate comma . map showF
+ 
+commaListField :: String -> (a -> Doc) -> ReadP [a] a
                  -> (b -> [a]) -> ([a] -> b -> b) -> FieldDescr b
-commaListField name showF readF get set =
-  liftField get set' $
-    field name (fsep . punctuate comma . map showF) (parseCommaList readF)
-  where
-    set' xs b = set (get b ++ xs) b
+commaListField = commaListFieldWithSep fsep
 
-spaceListField :: String -> (a -> Doc) -> (ReadP [a] a)
+commaNewLineListField :: String -> (a -> Doc) -> ReadP [a] a
+                 -> (b -> [a]) -> ([a] -> b -> b) -> FieldDescr b
+commaNewLineListField = commaListFieldWithSep sep
+
+spaceListField :: String -> (a -> Doc) -> ReadP [a] a
                  -> (b -> [a]) -> ([a] -> b -> b) -> FieldDescr b
 spaceListField name showF readF get set =
   liftField get set' $
-    field name (fsep . map showF) (parseSpaceList readF)
+    field name showF' (parseSpaceList readF)
   where
     set' xs b = set (get b ++ xs) b
+    showF'    = fsep . map showF
 
-listField :: String -> (a -> Doc) -> (ReadP [a] a)
+listFieldWithSep :: Separator -> String -> (a -> Doc) -> ReadP [a] a
                  -> (b -> [a]) -> ([a] -> b -> b) -> FieldDescr b
-listField name showF readF get set =
+listFieldWithSep separator name showF readF get set =
   liftField get set' $
-    field name (fsep . map showF) (parseOptCommaList readF)
+    field name showF' (parseOptCommaList readF)
   where
     set' xs b = set (get b ++ xs) b
+    showF'    = separator . map showF
 
-optsField :: String -> CompilerFlavor -> (b -> [(CompilerFlavor,[String])]) -> ([(CompilerFlavor,[String])] -> b -> b) -> FieldDescr b
+listField :: String -> (a -> Doc) -> ReadP [a] a
+          -> (b -> [a]) -> ([a] -> b -> b) -> FieldDescr b
+listField = listFieldWithSep fsep
+
+optsField :: String -> CompilerFlavor -> (b -> [(CompilerFlavor,[String])])
+             -> ([(CompilerFlavor,[String])] -> b -> b) -> FieldDescr b
 optsField name flavor get set =
    liftField (fromMaybe [] . lookup flavor . get)
              (\opts b -> set (reorder (update flavor opts (get b))) b) $
-        field name (hsep . map text)
-                   (sepBy parseTokenQ' (munch1 isSpace))
+        field name showF (sepBy parseTokenQ' (munch1 isSpace))
   where
         update _ opts l | all null opts = l  --empty opts as if no opts
         update f opts [] = [(f,opts)]
@@ -241,10 +242,11 @@ optsField name flavor get set =
            | f == f'   = (f, opts' ++ opts) : rest
            | otherwise = (f',opts') : update f opts rest
         reorder = sortBy (comparing fst)
+        showF   = hsep . map text
 
 -- TODO: this is a bit smelly hack. It's because we want to parse bool fields
 --       liberally but not accept new parses. We cannot do that with ReadP
---       because it does not support warnings. We need a new parser framwork!
+--       because it does not support warnings. We need a new parser framework!
 boolField :: String -> (b -> Bool) -> (Bool -> b -> b) -> FieldDescr b
 boolField name get set = liftField get set (FieldDescr name showF readF)
   where
@@ -261,11 +263,29 @@ boolField name get set = liftField get set (FieldDescr name showF readF)
           "The '" ++ name ++ "' field is case sensitive, use 'True' or 'False'."
 
 ppFields :: [FieldDescr a] -> a -> Doc
-ppFields fields x = vcat [ ppField name (getter x)
-                         | FieldDescr name getter _ <- fields]
+ppFields fields x =
+   vcat [ ppField name (getter x) | FieldDescr name getter _ <- fields ]
 
 ppField :: String -> Doc -> Doc
-ppField name fielddoc = text name <> colon <+> fielddoc
+ppField name fielddoc 
+   | isEmpty fielddoc         = empty
+   | name `elem` nestedFields = text name <> colon $+$ nest indentWith fielddoc
+   | otherwise                = text name <> colon <+> fielddoc
+   where
+      nestedFields =
+         [ "description"
+         , "build-depends"
+         , "data-files"
+         , "extra-source-files"
+         , "extra-tmp-files"
+         , "exposed-modules"
+         , "c-sources"
+         , "extra-libraries"
+         , "includes"
+         , "install-includes"
+         , "other-modules"
+         , "depends"
+         ]
 
 showFields :: [FieldDescr a] -> a -> String
 showFields fields = render . ($+$ text "") . ppFields fields
@@ -276,12 +296,19 @@ showSingleNamedField fields f =
     []      -> Nothing
     (get:_) -> Just (render . ppField f . get)
 
+showSimpleSingleNamedField :: [FieldDescr a] -> String -> Maybe (a -> String)
+showSimpleSingleNamedField fields f =
+  case [ get | (FieldDescr f' get _) <- fields, f' == f ] of
+    []      -> Nothing
+    (get:_) -> Just (renderStyle myStyle . get)
+ where myStyle = style { mode = LeftMode }
+
 parseFields :: [FieldDescr a] -> a -> String -> ParseResult a
-parseFields fields initial = \str ->
+parseFields fields initial str =
   readFields str >>= accumFields fields initial
 
 parseFieldsFlat :: [FieldDescr a] -> a -> String -> ParseResult a
-parseFieldsFlat fields initial = \str ->
+parseFieldsFlat fields initial str =
   readFieldsFlat str >>= accumFields fields initial
 
 accumFields :: [FieldDescr a] -> a -> [Field] -> ParseResult a
@@ -314,7 +341,7 @@ warnUnrec _ _ = Nothing
 --   warnings will be generated) ignores unrecognized fields, by
 --   returning the structure being built unmodified.
 ignoreUnrec :: UnrecFieldParser a
-ignoreUnrec _ x = Just x
+ignoreUnrec _ = Just
 
 ------------------------------------------------------------------------------
 
@@ -370,7 +397,7 @@ readFieldsFlat input = mapM (mkField 0)
 
 -- attach line number and determine indentation
 trimLines :: [String] -> [(LineNo, Indent, HasTabs, String)]
-trimLines ls = [ (lineno, indent, hastabs, (trimTrailing l'))
+trimLines ls = [ (lineno, indent, hastabs, trimTrailing l')
                | (lineno, l) <- zip [1..] ls
                , let (sps, l') = span isSpace l
                      indent    = length sps
@@ -415,7 +442,7 @@ data Token =
        -- > else
        -- >    other
        --
-       -- this is ok
+       -- this is OK
        Line LineNo Indent HasTabs String
      | Span LineNo                String  -- ^ span in a line, following brackets
      | OpenBracket LineNo | CloseBracket LineNo
@@ -423,7 +450,7 @@ data Token =
 type Indent = Int
 type HasTabs = Bool
 
--- | Tokenise a single line, splitting on '{' '}' and the spans inbetween.
+-- | Tokenise a single line, splitting on '{' '}' and the spans in between.
 -- Also trims leading & trailing space on those spans within the line.
 tokeniseLine :: (LineNo, Indent, HasTabs, String) -> [Token]
 tokeniseLine (n0, i, t, l) = case split n0 l of
@@ -460,8 +487,8 @@ mkTree :: [Token] -> ParseResult [SyntaxTree]
 mkTree toks =
   layout 0 [] toks >>= \(trees, trailing) -> case trailing of
     []               -> return trees
-    OpenBracket  n:_ -> syntaxError n "mismatched backets, unexpected {"
-    CloseBracket n:_ -> syntaxError n "mismatched backets, unexpected }"
+    OpenBracket  n:_ -> syntaxError n "mismatched brackets, unexpected {"
+    CloseBracket n:_ -> syntaxError n "mismatched brackets, unexpected }"
     -- the following two should never happen:
     Span n     l  :_ -> syntaxError n $ "unexpected span: " ++ show l
     Line n _ _ l  :_ -> syntaxError n $ "unexpected line: " ++ show l
@@ -492,7 +519,7 @@ layout i a (Line n i' t l:ss) = do
         ([], _)   -> layout i (Node (n,t,l) [] :a) ss
         (ts, ss') -> layout i (Node (n,t,l) ts :a) ss'
 
-layout _ _ (   OpenBracket  n :_)  = syntaxError n $ "unexpected '{'"
+layout _ _ (   OpenBracket  n :_)  = syntaxError n "unexpected '{'"
 layout _ a (s@(CloseBracket _):ss) = return (reverse a, s:ss)
 layout _ _ (   Span n l       : _) = syntaxError n $ "unexpected span: "
                                                   ++ show l
@@ -567,7 +594,8 @@ ifelse (Section n "if"   cond thenpart:fs)
        | otherwise     = do tp  <- ifelse thenpart
                             fs' <- ifelse fs
                             return (IfBlock n cond tp []:fs')
-ifelse (Section n "else" _ _:_) = syntaxError n "stray 'else' with no preceding 'if'"
+ifelse (Section n "else" _ _:_) = syntaxError n
+                                  "stray 'else' with no preceding 'if'"
 ifelse (Section n s a fs':fs) = do fs''  <- ifelse fs'
                                    fs''' <- ifelse fs
                                    return (Section n s a fs'' : fs''')
@@ -585,11 +613,16 @@ parseFilePathQ = parseTokenQ
   -- removed until normalise is no longer broken, was:
   --   liftM normalise parseTokenQ
 
+betweenSpaces :: ReadP r a -> ReadP r a
+betweenSpaces act = do skipSpaces
+                       res <- act
+                       skipSpaces
+                       return res
+
 parseBuildTool :: ReadP r Dependency
 parseBuildTool = do name <- parseBuildToolNameQ
-                    skipSpaces
-                    ver <- parseVersionRangeQ <++ return anyVersion
-                    skipSpaces
+                    ver <- betweenSpaces $
+                           parseVersionRangeQ <++ return anyVersion
                     return $ Dependency name ver
 
 parseBuildToolNameQ :: ReadP r PackageName
@@ -607,10 +640,10 @@ parseBuildToolName = do ns <- sepBy1 component (ReadP.char '-')
 -- eg "gtk+-2.0" is a valid pkg-config package _name_.
 -- It then has a package version number like 2.10.13
 parsePkgconfigDependency :: ReadP r Dependency
-parsePkgconfigDependency = do name <- munch1 (\c -> isAlphaNum c || c `elem` "+-._")
-                              skipSpaces
-                              ver <- parseVersionRangeQ <++ return anyVersion
-                              skipSpaces
+parsePkgconfigDependency = do name <- munch1
+                                      (\c -> isAlphaNum c || c `elem` "+-._")
+                              ver <- betweenSpaces $
+                                     parseVersionRangeQ <++ return anyVersion
                               return $ Dependency (PackageName name) ver
 
 parsePackageNameQ :: ReadP r PackageName
@@ -630,9 +663,7 @@ parseTestedWithQ = parseQuoted tw <++ tw
   where
     tw :: ReadP r (CompilerFlavor,VersionRange)
     tw = do compiler <- parseCompilerFlavorCompat
-            skipSpaces
-            version <- parse <++ return anyVersion
-            skipSpaces
+            version <- betweenSpaces $ parse <++ return anyVersion
             return (compiler,version)
 
 parseLicenseQ :: ReadP r License
@@ -656,13 +687,13 @@ parseTokenQ :: ReadP r String
 parseTokenQ = parseHaskellString <++ munch1 (\x -> not (isSpace x) && x /= ',')
 
 parseTokenQ' :: ReadP r String
-parseTokenQ' = parseHaskellString <++ munch1 (\x -> not (isSpace x))
+parseTokenQ' = parseHaskellString <++ munch1 (not . isSpace)
 
 parseSepList :: ReadP r b
              -> ReadP r a -- ^The parser for the stuff between commas
              -> ReadP r [a]
 parseSepList sepr p = sepBy p separator
-    where separator = skipSpaces >> sepr >> skipSpaces
+    where separator = betweenSpaces sepr
 
 parseSpaceList :: ReadP r a -- ^The parser for the stuff between commas
                -> ReadP r [a]
@@ -677,7 +708,7 @@ parseOptCommaList :: ReadP r a -- ^The parser for the stuff between commas
 parseOptCommaList = parseSepList (optional (ReadP.char ','))
 
 parseQuoted :: ReadP r a -> ReadP r a
-parseQuoted p = between (ReadP.char '"') (ReadP.char '"') p
+parseQuoted = between (ReadP.char '"') (ReadP.char '"')
 
 parseFreeText :: ReadP.ReadP s String
 parseFreeText = ReadP.munch (const True)
@@ -686,7 +717,8 @@ parseFreeText = ReadP.munch (const True)
 -- ** Pretty printing
 
 showFilePath :: FilePath -> Doc
-showFilePath = showToken
+showFilePath "" = empty
+showFilePath x  = showToken x
 
 showToken :: String -> Doc
 showToken str
@@ -702,7 +734,6 @@ showTestedWith (compiler, version) = text (show compiler) <+> disp version
 -- and with blank lines replaced by dots for correct re-parsing.
 showFreeText :: String -> Doc
 showFreeText "" = empty
-showFreeText ('\n' :r)  = text " " $+$ text "." $+$ showFreeText r
 showFreeText s  = vcat [text (if null l then "." else l) | l <- lines_ s]
 
 -- | 'lines_' breaks a string up into a list of strings at newline
@@ -713,3 +744,7 @@ lines_ s                 =  let (l, s') = break (== '\n') s
                             in  l : case s' of
                                         []    -> []
                                         (_:s'') -> lines_ s''
+
+-- | the indentation used for pretty printing
+indentWith :: Int
+indentWith = 4

@@ -1,3 +1,4 @@
+{-# LANGUAGE DeriveDataTypeable #-}
 -----------------------------------------------------------------------------
 -- |
 -- Module      :  Distribution.System
@@ -25,11 +26,15 @@ module Distribution.System (
   -- * Platform is a pair of arch and OS
   Platform(..),
   buildPlatform,
+  platformFromTriple
   ) where
 
 import qualified System.Info (os, arch)
 import qualified Data.Char as Char (toLower, isAlphaNum)
 
+import Data.Data (Data)
+import Data.Typeable (Typeable)
+import Data.Maybe (fromMaybe, listToMaybe)
 import Distribution.Text (Text(..), display)
 import qualified Distribution.Compat.ReadP as Parse
 import qualified Text.PrettyPrint as Disp
@@ -40,13 +45,13 @@ import Text.PrettyPrint ((<>))
 -- The reason we have multiple ways to do the classification is because there
 -- are two situations where we need to do it.
 --
--- For parsing os and arch names in .cabal files we really want everyone to be
+-- For parsing OS and arch names in .cabal files we really want everyone to be
 -- referring to the same or or arch by the same name. Variety is not a virtue
 -- in this case. We don't mind about case though.
 --
 -- For the System.Info.os\/arch different Haskell implementations use different
 -- names for the same or\/arch. Also they tend to distinguish versions of an
--- os\/arch which we just don't care about.
+-- OS\/arch which we just don't care about.
 --
 -- The 'Compat' classification allows us to recognise aliases that are already
 -- in common use but it allows us to distinguish them from the canonical name
@@ -58,30 +63,35 @@ data ClassificationStrictness = Permissive | Compat | Strict
 -- * Operating System
 -- ------------------------------------------------------------
 
-data OS = Linux | Windows | OSX        -- teir 1 desktop OSs
-        | FreeBSD | OpenBSD | NetBSD   -- other free unix OSs
+data OS = Linux | Windows | OSX        -- tier 1 desktop OSs
+        | FreeBSD | OpenBSD | NetBSD   -- other free Unix OSs
+        | DragonFly
         | Solaris | AIX | HPUX | IRIX  -- ageing Unix OSs
         | HaLVM                        -- bare metal / VMs / hypervisors
+        | IOS                          -- iOS
         | OtherOS String
-  deriving (Eq, Ord, Show, Read)
+  deriving (Eq, Ord, Show, Read, Typeable, Data)
 
 --TODO: decide how to handle Android and iOS.
 -- They are like Linux and OSX but with some differences.
--- Should they be separate from linux/osx, or a subtype?
+-- Should they be separate from Linux/OS X, or a subtype?
 -- e.g. should we have os(linux) && os(android) true simultaneously?
 
 knownOSs :: [OS]
 knownOSs = [Linux, Windows, OSX
-           ,FreeBSD, OpenBSD, NetBSD
+           ,FreeBSD, OpenBSD, NetBSD, DragonFly
            ,Solaris, AIX, HPUX, IRIX
-           ,HaLVM]
+           ,HaLVM
+           ,IOS]
 
 osAliases :: ClassificationStrictness -> OS -> [String]
-osAliases Permissive Windows = ["mingw32", "cygwin32"]
+osAliases Permissive Windows = ["mingw32", "win32", "cygwin32"]
 osAliases Compat     Windows = ["mingw32", "win32"]
 osAliases _          OSX     = ["darwin"]
 osAliases Permissive FreeBSD = ["kfreebsdgnu"]
+osAliases Compat     FreeBSD = ["kfreebsdgnu"]
 osAliases Permissive Solaris = ["solaris2"]
+osAliases Compat     Solaris = ["solaris2"]
 osAliases _          _       = []
 
 instance Text OS where
@@ -92,9 +102,7 @@ instance Text OS where
 
 classifyOS :: ClassificationStrictness -> String -> OS
 classifyOS strictness s =
-  case lookup (lowercase s) osMap of
-    Just os -> os
-    Nothing -> OtherOS s
+  fromMaybe (OtherOS s) $ lookup (lowercase s) osMap
   where
     osMap = [ (name, os)
             | os <- knownOSs
@@ -113,7 +121,7 @@ data Arch = I386  | X86_64 | PPC | PPC64 | Sparc
           | Alpha | Hppa   | Rs6000
           | M68k  | Vax
           | OtherArch String
-  deriving (Eq, Ord, Show, Read)
+  deriving (Eq, Ord, Show, Read, Typeable, Data)
 
 knownArches :: [Arch]
 knownArches = [I386, X86_64, PPC, PPC64, Sparc
@@ -140,9 +148,7 @@ instance Text Arch where
 
 classifyArch :: ClassificationStrictness -> String -> Arch
 classifyArch strictness s =
-  case lookup (lowercase s) archMap of
-    Just arch -> arch
-    Nothing   -> OtherArch s
+  fromMaybe (OtherArch s) $ lookup (lowercase s) archMap
   where
     archMap = [ (name, arch)
               | arch <- knownArches
@@ -156,7 +162,7 @@ buildArch = classifyArch Permissive System.Info.arch
 -- ------------------------------------------------------------
 
 data Platform = Platform Arch OS
-  deriving (Eq, Ord, Show, Read)
+  deriving (Eq, Ord, Show, Read, Typeable, Data)
 
 instance Text Platform where
   disp (Platform arch os) = disp arch <> Disp.char '-' <> disp os
@@ -166,6 +172,9 @@ instance Text Platform where
     os   <- parse
     return (Platform arch os)
 
+-- | The platform Cabal was compiled on. In most cases,
+-- @LocalBuildInfo.hostPlatform@ should be used instead (the platform we're
+-- targeting).
 buildPlatform :: Platform
 buildPlatform = Platform buildArch buildOS
 
@@ -177,3 +186,16 @@ ident = Parse.munch1 (\c -> Char.isAlphaNum c || c == '_' || c == '-')
 
 lowercase :: String -> String
 lowercase = map Char.toLower
+
+platformFromTriple :: String -> Maybe Platform
+platformFromTriple triple =
+  fmap fst (listToMaybe $ Parse.readP_to_S parseTriple triple)
+  where parseWord = Parse.munch1 (\c -> Char.isAlphaNum c || c == '_')
+        parseTriple = do
+          arch <- fmap (classifyArch Strict) parseWord
+          _ <- Parse.char '-'
+          _ <- parseWord -- Skip vendor
+          _ <- Parse.char '-'
+          os <- fmap (classifyOS Compat) ident -- OS may have hyphens, like
+                                               -- 'nto-qnx'
+          return $ Platform arch os

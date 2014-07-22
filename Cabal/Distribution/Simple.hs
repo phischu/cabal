@@ -2,6 +2,7 @@
 -- |
 -- Module      :  Distribution.Simple
 -- Copyright   :  Isaac Jones 2003-2005
+-- License     :  BSD3
 --
 -- Maintainer  :  cabal-devel@haskell.org
 -- Portability :  portable
@@ -23,36 +24,6 @@
 -- The original idea was that there could be different build systems that all
 -- presented the same compatible command line interfaces. There is still a
 -- "Distribution.Make" system but in practice no packages use it.
-
-{- All rights reserved.
-
-Redistribution and use in source and binary forms, with or without
-modification, are permitted provided that the following conditions are
-met:
-
-    * Redistributions of source code must retain the above copyright
-      notice, this list of conditions and the following disclaimer.
-
-    * Redistributions in binary form must reproduce the above
-      copyright notice, this list of conditions and the following
-      disclaimer in the documentation and/or other materials provided
-      with the distribution.
-
-    * Neither the name of Isaac Jones nor the names of other
-      contributors may be used to endorse or promote products derived
-      from this software without specific prior written permission.
-
-THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. -}
 
 {-
 Work around this warning:
@@ -85,7 +56,7 @@ module Distribution.Simple (
 -- local
 import Distribution.Simple.Compiler hiding (Flag)
 import Distribution.Simple.UserHooks
-import Distribution.Package --must not specify imports, since we're exporting moule.
+import Distribution.Package --must not specify imports, since we're exporting module.
 import Distribution.PackageDescription
          ( PackageDescription(..), GenericPackageDescription, Executable(..)
          , updatePackageDescription, hasLibs
@@ -101,7 +72,7 @@ import Distribution.Simple.PreProcess (knownSuffixHandlers, PPSuffixHandler)
 import Distribution.Simple.Setup
 import Distribution.Simple.Command
 
-import Distribution.Simple.Build        ( build )
+import Distribution.Simple.Build        ( build, repl )
 import Distribution.Simple.SrcDist      ( sdist )
 import Distribution.Simple.Register
          ( register, unregister )
@@ -131,15 +102,17 @@ import Distribution.Text
          ( display )
 
 -- Base
-import System.Environment(getArgs, getProgName, getEnvironment)
+import System.Environment(getArgs, getProgName)
 import System.Directory(removeFile, doesFileExist,
                         doesDirectoryExist, removeDirectoryRecursive)
-import System.Exit
+import System.Exit       (exitWith,ExitCode(..))
 import System.IO.Error   (isDoesNotExistError)
-import Distribution.Compat.Exception (catchIO, throwIOIO)
+import Control.Exception (throwIO)
+import Distribution.Compat.Environment (getEnvironment)
+import Distribution.Compat.Exception (catchIO)
 
 import Control.Monad   (when)
-import Data.List       (intersperse, unionBy, nub, (\\))
+import Data.List       (intercalate, unionBy, nub, (\\))
 
 -- | A simple implementation of @main@ for a Cabal setup script.
 -- It reads the package description file using IO, and performs the
@@ -187,7 +160,7 @@ defaultMainHelper hooks args = topHandler $
     printHelp help = getProgName >>= putStr . help
     printOptionsList = putStr . unlines
     printErrors errs = do
-      putStr (concat (intersperse "\n" errs))
+      putStr (intercalate "\n" errs)
       exitWith (ExitFailure 1)
     printNumericVersion = putStrLn $ display cabalVersion
     printVersion        = putStrLn $ "Cabal library version "
@@ -198,6 +171,7 @@ defaultMainHelper hooks args = topHandler $
       [configureCommand progs `commandAddAction` \fs as ->
                                                  configureAction    hooks fs as >> return ()
       ,buildCommand     progs `commandAddAction` buildAction        hooks
+      ,replCommand      progs `commandAddAction` replAction         hooks
       ,installCommand         `commandAddAction` installAction      hooks
       ,copyCommand            `commandAddAction` copyAction         hooks
       ,haddockCommand         `commandAddAction` haddockAction      hooks
@@ -272,7 +246,25 @@ buildAction hooks flags args = do
 
   hookedAction preBuild buildHook postBuild
                (return lbi { withPrograms = progs })
-               hooks flags args
+               hooks flags { buildArgs = args } args
+
+replAction :: UserHooks -> ReplFlags -> Args -> IO ()
+replAction hooks flags args = do
+  let distPref  = fromFlag $ replDistPref flags
+      verbosity = fromFlag $ replVerbosity flags
+
+  lbi <- getBuildConfig hooks verbosity distPref
+  progs <- reconfigurePrograms verbosity
+             (replProgramPaths flags)
+             (replProgramArgs flags)
+             (withPrograms lbi)
+
+  pbi <- preRepl hooks args flags
+  let lbi' = lbi { withPrograms = progs }
+      pkg_descr0 = localPkgDescr lbi'
+      pkg_descr = updatePackageDescription pbi pkg_descr0
+  replHook hooks pkg_descr lbi' hooks flags args
+  postRepl hooks args flags pkg_descr lbi'
 
 hscolourAction :: UserHooks -> HscolourFlags -> Args -> IO ()
 hscolourAction hooks flags args
@@ -355,12 +347,9 @@ testAction hooks flags args = do
     -- default action is a no-op and if the package uses the old test interface
     -- the new handler will find no tests.
     runTests hooks args False pkg_descr localBuildInfo
-    --FIXME: this is a hack, passing the args inside the flags
-    -- it's because the args to not get passed to the main test hook
-    let flags' = flags { testList = Flag args }
-    hookedAction preTest testHook postTest
+    hookedActionWithArgs preTest testHook postTest
             (getBuildConfig hooks verbosity distPref)
-            hooks flags' args
+            hooks flags args
 
 benchAction :: UserHooks -> BenchmarkFlags -> Args -> IO ()
 benchAction hooks flags args = do
@@ -455,13 +444,13 @@ getBuildConfig hooks verbosity distPref = do
     reconfigure :: FilePath -> LocalBuildInfo -> IO LocalBuildInfo
     reconfigure pkg_descr_file lbi = do
       notice verbosity $ pkg_descr_file ++ " has been changed. "
-                      ++ "Re-configuring with most recently used options. " 
+                      ++ "Re-configuring with most recently used options. "
                       ++ "If this fails, please run configure manually.\n"
       let cFlags = configFlags lbi
       let cFlags' = cFlags {
             -- Since the list of unconfigured programs is not serialized,
             -- restore it to the same value as normally used at the beginning
-            -- of a conigure run:
+            -- of a configure run:
             configPrograms = restoreProgramConfiguration
                                (builtinPrograms ++ hookedPrograms hooks)
                                (configPrograms cFlags),
@@ -502,8 +491,7 @@ clean pkg_descr flags = do
             isDir <- doesDirectoryExist fname
             isFile <- doesFileExist fname
             if isDir then removeDirectoryRecursive fname
-              else if isFile then removeFile fname
-              else return ()
+              else when isFile $ removeFile fname
         verbosity = fromFlag (cleanVerbosity flags)
 
 -- --------------------------------------------------------------------------
@@ -517,8 +505,9 @@ simpleUserHooks =
        confHook  = configure,
        postConf  = finalChecks,
        buildHook = defaultBuildHook,
+       replHook  = defaultReplHook,
        copyHook  = \desc lbi _ f -> install desc lbi f, -- has correct 'copy' behavior with params
-       testHook = defaultTestHook,
+       testHook  = defaultTestHook,
        benchHook = defaultBenchHook,
        instHook  = defaultInstallHook,
        sDistHook = \p l h f -> sdist p l f srcPref (allSuffixHandlers h),
@@ -551,14 +540,14 @@ defaultUserHooks :: UserHooks
 defaultUserHooks = autoconfUserHooks {
           confHook = \pkg flags -> do
                        let verbosity = fromFlag (configVerbosity flags)
-                       warn verbosity $
+                       warn verbosity
                          "defaultUserHooks in Setup script is deprecated."
                        confHook autoconfUserHooks pkg flags,
           postConf = oldCompatPostConf
     }
     -- This is the annoying old version that only runs configure if it exists.
     -- It's here for compatibility with existing Setup.hs scripts. See:
-    -- http://hackage.haskell.org/trac/hackage/ticket/165
+    -- https://github.com/haskell/cabal/issues/158
     where oldCompatPostConf args flags pkg_descr lbi
               = do let verbosity = fromFlag (configVerbosity flags)
                    noExtraFlags args
@@ -632,7 +621,7 @@ runConfigureScript verbosity backwardsCompatHack flags lbi = do
     rawSystemExitWithEnv verbosity "sh" args' env'
 
   where
-    args = "configure" : configureArgs backwardsCompatHack flags
+    args = "./configure" : configureArgs backwardsCompatHack flags
 
     appendToEnvironment (key, val) [] = [(key, val)]
     appendToEnvironment (key, val) (kv@(k, v) : rest)
@@ -647,7 +636,7 @@ runConfigureScript verbosity backwardsCompatHack flags lbi = do
       = action
           `catchIO` \ioe -> if isDoesNotExistError ioe
                               then die notFoundMsg
-                              else throwIOIO ioe
+                              else throwIO ioe
 
     notFoundMsg = "The package has a './configure' script. This requires a "
                ++ "Unix compatibility toolchain such as MinGW+MSYS or Cygwin."
@@ -661,10 +650,10 @@ getHookedBuildInfo verbosity = do
       info verbosity $ "Reading parameters from " ++ infoFile
       readHookedBuildInfo verbosity infoFile
 
-defaultTestHook :: PackageDescription -> LocalBuildInfo
+defaultTestHook :: Args -> PackageDescription -> LocalBuildInfo
                 -> UserHooks -> TestFlags -> IO ()
-defaultTestHook pkg_descr localbuildinfo _ flags =
-    test pkg_descr localbuildinfo flags
+defaultTestHook args pkg_descr localbuildinfo _ flags =
+    test args pkg_descr localbuildinfo flags
 
 defaultBenchHook :: Args -> PackageDescription -> LocalBuildInfo
                  -> UserHooks -> BenchmarkFlags -> IO ()
@@ -692,6 +681,11 @@ defaultBuildHook :: PackageDescription -> LocalBuildInfo
         -> UserHooks -> BuildFlags -> IO ()
 defaultBuildHook pkg_descr localbuildinfo hooks flags =
   build pkg_descr localbuildinfo flags (allSuffixHandlers hooks)
+
+defaultReplHook :: PackageDescription -> LocalBuildInfo
+        -> UserHooks -> ReplFlags -> [String] -> IO ()
+defaultReplHook pkg_descr localbuildinfo hooks flags args =
+  repl pkg_descr localbuildinfo flags (allSuffixHandlers hooks) args
 
 defaultRegHook :: PackageDescription -> LocalBuildInfo
         -> UserHooks -> RegisterFlags -> IO ()

@@ -2,6 +2,7 @@
 -- |
 -- Module      :  Distribution.Simple.Install
 -- Copyright   :  Isaac Jones 2003-2004
+-- License     :  BSD3
 --
 -- Maintainer  :  cabal-devel@haskell.org
 -- Portability :  portable
@@ -10,36 +11,6 @@
 -- \"@.\/setup install@\" and \"@.\/setup copy@\" actions. It moves files into
 -- place based on the prefix argument. It does the generic bits and then calls
 -- compiler-specific functions to do the rest.
-
-{- All rights reserved.
-
-Redistribution and use in source and binary forms, with or without
-modification, are permitted provided that the following conditions are
-met:
-
-    * Redistributions of source code must retain the above copyright
-      notice, this list of conditions and the following disclaimer.
-
-    * Redistributions in binary form must reproduce the above
-      copyright notice, this list of conditions and the following
-      disclaimer in the documentation and/or other materials provided
-      with the distribution.
-
-    * Neither the name of Isaac Jones nor the names of other
-      contributors may be used to endorse or promote products derived
-      from this software without specific prior written permission.
-
-THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. -}
 
 module Distribution.Simple.Install (
         install,
@@ -51,11 +22,12 @@ import Distribution.PackageDescription (
 import Distribution.Package (Package(..))
 import Distribution.Simple.LocalBuildInfo (
         LocalBuildInfo(..), InstallDirs(..), absoluteInstallDirs,
-        substPathTemplate)
+        substPathTemplate, withLibLBI)
 import Distribution.Simple.BuildPaths (haddockName, haddockPref)
 import Distribution.Simple.Utils
-         ( createDirectoryIfMissingVerbose, installDirectoryContents
-         , installOrdinaryFile, die, info, notice, matchDirFileGlob )
+         ( createDirectoryIfMissingVerbose
+         , installDirectoryContents, installOrdinaryFile, isInSearchPath
+         , die, info, notice, warn, matchDirFileGlob )
 import Distribution.Simple.Compiler
          ( CompilerFlavor(..), compilerFlavor )
 import Distribution.Simple.Setup (CopyFlags(..), CopyDest(..), fromFlag)
@@ -66,6 +38,7 @@ import qualified Distribution.Simple.JHC  as JHC
 import qualified Distribution.Simple.LHC  as LHC
 import qualified Distribution.Simple.Hugs as Hugs
 import qualified Distribution.Simple.UHC  as UHC
+import qualified Distribution.Simple.HaskellSuite as HaskellSuite
 
 import Control.Monad (when, unless)
 import System.Directory
@@ -135,27 +108,33 @@ install pkg_descr lbi flags = do
         installOrdinaryFile verbosity haddockInterfaceFileSrc
                                       haddockInterfaceFileDest
 
-  let lfile = licenseFile pkg_descr
-  unless (null lfile) $ do
+  let lfiles = licenseFiles pkg_descr
+  unless (null lfiles) $ do
     createDirectoryIfMissingVerbose verbosity True docPref
-    installOrdinaryFile verbosity lfile (docPref </> takeFileName lfile)
+    sequence_
+      [ installOrdinaryFile verbosity lfile (docPref </> takeFileName lfile)
+      | lfile <- lfiles ]
 
   let buildPref = buildDir lbi
   when (hasLibs pkg_descr) $
     notice verbosity ("Installing library in " ++ libPref)
-  when (hasExes pkg_descr) $
+  when (hasExes pkg_descr) $ do
     notice verbosity ("Installing executable(s) in " ++ binPref)
+    inPath <- isInSearchPath binPref
+    when (not inPath) $
+      warn verbosity ("The directory " ++ binPref
+                      ++ " is not in the system search path.")
 
   -- install include files for all compilers - they may be needed to compile
   -- haskell files (using the CPP extension)
   when (hasLibs pkg_descr) $ installIncludeFiles verbosity pkg_descr incPref
 
   case compilerFlavor (compiler lbi) of
-     GHC  -> do withLib pkg_descr $
+     GHC  -> do withLibLBI pkg_descr lbi $
                   GHC.installLib verbosity lbi libPref dynlibPref buildPref pkg_descr
                 withExe pkg_descr $
                   GHC.installExe verbosity lbi installDirs buildPref (progPrefixPref, progSuffixPref) pkg_descr
-     LHC  -> do withLib pkg_descr $
+     LHC  -> do withLibLBI pkg_descr lbi $
                   LHC.installLib verbosity lbi libPref dynlibPref buildPref pkg_descr
                 withExe pkg_descr $
                   LHC.installExe verbosity lbi installDirs buildPref (progPrefixPref, progSuffixPref) pkg_descr
@@ -167,13 +146,15 @@ install pkg_descr lbi flags = do
        let targetProgPref = progdir (absoluteInstallDirs pkg_descr lbi NoCopyDest)
        let scratchPref = scratchDir lbi
        Hugs.install verbosity lbi libPref progPref binPref targetProgPref scratchPref (progPrefixPref, progSuffixPref) pkg_descr
-     NHC  -> do withLib pkg_descr $ NHC.installLib verbosity libPref buildPref (packageId pkg_descr)
+     NHC  -> do withLibLBI pkg_descr lbi $ NHC.installLib verbosity libPref buildPref (packageId pkg_descr)
                 withExe pkg_descr $ NHC.installExe verbosity binPref buildPref (progPrefixPref, progSuffixPref)
      UHC  -> do withLib pkg_descr $ UHC.installLib verbosity lbi libPref dynlibPref buildPref pkg_descr
+     HaskellSuite {} ->
+       withLib pkg_descr $
+         HaskellSuite.installLib verbosity lbi libPref dynlibPref buildPref pkg_descr
      _    -> die $ "installing with "
                 ++ display (compilerFlavor (compiler lbi))
                 ++ " is not implemented"
-  return ()
   -- register step should be performed by caller.
 
 -- | Install the files listed in data-files

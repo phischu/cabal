@@ -1,71 +1,41 @@
 -----------------------------------------------------------------------------
---
+-- |
 -- Module      :  Distribution.PackageDescription.PrettyPrint
 -- Copyright   :  Jürgen Nicklisch-Franken 2010
--- License     :  AllRightsReserved
+-- License     :  BSD3
 --
 -- Maintainer  : cabal-devel@haskell.org
 -- Stability   : provisional
 -- Portability : portable
 --
--- | Pretty printing for cabal files
+-- Pretty printing for cabal files
 --
 -----------------------------------------------------------------------------
-{- All rights reserved.
-
-Redistribution and use in source and binary forms, with or without
-modification, are permitted provided that the following conditions are
-met:
-
-    * Redistributions of source code must retain the above copyright
-      notice, this list of conditions and the following disclaimer.
-
-    * Redistributions in binary form must reproduce the above
-      copyright notice, this list of conditions and the following
-      disclaimer in the documentation and/or other materials provided
-      with the distribution.
-
-    * Neither the name of Isaac Jones nor the names of other
-      contributors may be used to endorse or promote products derived
-      from this software without specific prior written permission.
-
-THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. -}
 
 module Distribution.PackageDescription.PrettyPrint (
     writeGenericPackageDescription,
     showGenericPackageDescription,
 ) where
 
+import Data.Monoid (Monoid(mempty))
 import Distribution.PackageDescription
-       ( TestSuite(..), TestSuiteInterface(..), testType
+       ( Benchmark(..), BenchmarkInterface(..), benchmarkType
+       , TestSuite(..), TestSuiteInterface(..), testType
        , SourceRepo(..),
         customFieldsBI, CondTree(..), Condition(..),
         FlagName(..), ConfVar(..), Executable(..), Library(..),
         Flag(..), PackageDescription(..),
         GenericPackageDescription(..))
 import Text.PrettyPrint
-       (hsep, comma, punctuate, fsep, parens, char, nest, empty,
+       (hsep, comma, punctuate, parens, char, nest, empty,
         isEmpty, ($$), (<+>), colon, (<>), text, vcat, ($+$), Doc, render)
 import Distribution.Simple.Utils (writeUTF8File)
-import Distribution.ParseUtils (showFreeText, FieldDescr(..))
+import Distribution.ParseUtils (showFreeText, FieldDescr(..), indentWith, ppField, ppFields)
 import Distribution.PackageDescription.Parse (pkgDescrFieldDescrs,binfoFieldDescrs,libFieldDescrs,
-       sourceRepoFieldDescrs)
+       sourceRepoFieldDescrs,flagFieldDescrs)
 import Distribution.Package (Dependency(..))
 import Distribution.Text (Text(..))
 import Data.Maybe (isJust, fromJust, isNothing)
-
-indentWith :: Int
-indentWith = 4
 
 -- | Recompile with false for regression testing
 simplifiedPrinting :: Bool
@@ -86,6 +56,7 @@ ppGenericPackageDescription gpd          =
         $+$ ppLibrary (condLibrary gpd)
         $+$ ppExecutables (condExecutables gpd)
         $+$ ppTestSuites (condTestSuites gpd)
+        $+$ ppBenchmarks (condBenchmarks gpd)
 
 ppPackageDescription :: PackageDescription -> Doc
 ppPackageDescription pd                  =      ppFields pkgDescrFieldDescrs pd
@@ -103,20 +74,29 @@ ppSourceRepo repo                        =
   where
     sourceRepoFieldDescrs' = [fd | fd <- sourceRepoFieldDescrs, fieldName fd /= "kind"]
 
-ppFields :: [FieldDescr a] -> a -> Doc
-ppFields fields x                        =
-    vcat [ ppField name (getter x)
-                         | FieldDescr name getter _ <- fields]
+-- TODO: this is a temporary hack. Ideally, fields containing default values
+-- would be filtered out when the @FieldDescr a@ list is generated.
+ppFieldsFiltered :: [(String, String)] -> [FieldDescr a] -> a -> Doc
+ppFieldsFiltered removable fields x = ppFields (filter nondefault fields) x
+  where
+    nondefault (FieldDescr name getter _) =
+        maybe True (render (getter x) /=) (lookup name removable)
 
-ppField :: String -> Doc -> Doc
-ppField name fielddoc | isEmpty fielddoc = empty
-                      | otherwise        = text name <> colon <+> fielddoc
+binfoDefaults :: [(String, String)]
+binfoDefaults = [("buildable", "True")]
+
+libDefaults :: [(String, String)]
+libDefaults = ("exposed", "True") : binfoDefaults
+
+flagDefaults :: [(String, String)]
+flagDefaults = [("default", "True"), ("manual", "False")]
 
 ppDiffFields :: [FieldDescr a] -> a -> a -> Doc
 ppDiffFields fields x y                  =
-    vcat [ ppField name (getter x)
-                         | FieldDescr name getter _ <- fields,
-                            render (getter x) /= render (getter y)]
+   vcat [ ppField name (getter x)
+        | FieldDescr name getter _ <- fields
+        , render (getter x) /= render (getter y)
+        ]
 
 ppCustomFields :: [(String,String)] -> Doc
 ppCustomFields flds                      = vcat [ppCustomField f | f <- flds]
@@ -128,20 +108,17 @@ ppGenPackageFlags :: [Flag] -> Doc
 ppGenPackageFlags flds                   = vcat [ppFlag f | f <- flds]
 
 ppFlag :: Flag -> Doc
-ppFlag (MkFlag name desc dflt manual)    =
-    emptyLine $ text "flag" <+> ppFlagName name $+$
-            (nest indentWith ((if null desc
-                                then empty
-                                else  text "Description: " <+> showFreeText desc) $+$
-                     (if dflt then empty else text "Default: False") $+$
-                     (if manual then text "Manual: True" else empty)))
+ppFlag flag@(MkFlag name _ _ _)    =
+    emptyLine $ text "flag" <+> ppFlagName name $+$ nest indentWith fields
+  where
+    fields = ppFieldsFiltered flagDefaults flagFieldDescrs flag
 
 ppLibrary :: (Maybe (CondTree ConfVar [Dependency] Library)) -> Doc
 ppLibrary Nothing                        = empty
 ppLibrary (Just condTree)                =
     emptyLine $ text "library" $+$ nest indentWith (ppCondTree condTree Nothing ppLib)
   where
-    ppLib lib Nothing     = ppFields libFieldDescrs lib
+    ppLib lib Nothing     = ppFieldsFiltered libDefaults libFieldDescrs lib
                             $$  ppCustomFields (customFieldsBI (libBuildInfo lib))
     ppLib lib (Just plib) = ppDiffFields libFieldDescrs lib plib
                             $$  ppCustomFields (customFieldsBI (libBuildInfo lib))
@@ -153,7 +130,7 @@ ppExecutables exes                       =
   where
     ppExe (Executable _ modulePath' buildInfo') Nothing =
         (if modulePath' == "" then empty else text "main-is:" <+> text modulePath')
-            $+$ ppFields binfoFieldDescrs buildInfo'
+            $+$ ppFieldsFiltered binfoDefaults binfoFieldDescrs buildInfo'
             $+$  ppCustomFields (customFieldsBI buildInfo')
     ppExe (Executable _ modulePath' buildInfo')
             (Just (Executable _ modulePath2 buildInfo2)) =
@@ -169,13 +146,17 @@ ppTestSuites suites =
                      | (n,condTree) <- suites]
   where
     ppTestSuite testsuite Nothing =
-                text "type:" <+> disp (testType testsuite)
+                maybe empty (\t -> text "type:"        <+> disp t)
+                            maybeTestType
             $+$ maybe empty (\f -> text "main-is:"     <+> text f)
                             (testSuiteMainIs testsuite)
             $+$ maybe empty (\m -> text "test-module:" <+> disp m)
                             (testSuiteModule testsuite)
-            $+$ ppFields binfoFieldDescrs (testBuildInfo testsuite)
+            $+$ ppFieldsFiltered binfoDefaults binfoFieldDescrs (testBuildInfo testsuite)
             $+$ ppCustomFields (customFieldsBI (testBuildInfo testsuite))
+      where
+        maybeTestType | testInterface testsuite == mempty = Nothing
+                      | otherwise = Just (testType testsuite)
 
     ppTestSuite (TestSuite _ _ buildInfo' _)
                     (Just (TestSuite _ _ buildInfo2 _)) =
@@ -188,6 +169,32 @@ ppTestSuites suites =
 
     testSuiteModule test = case testInterface test of
       TestSuiteLibV09 _ m -> Just m
+      _                   -> Nothing
+
+ppBenchmarks :: [(String, CondTree ConfVar [Dependency] Benchmark)] -> Doc
+ppBenchmarks suites =
+    emptyLine $ vcat [     text ("benchmark " ++ n)
+                       $+$ nest indentWith (ppCondTree condTree Nothing ppBenchmark)
+                     | (n,condTree) <- suites]
+  where
+    ppBenchmark benchmark Nothing =
+                maybe empty (\t -> text "type:"        <+> disp t)
+                            maybeBenchmarkType
+            $+$ maybe empty (\f -> text "main-is:"     <+> text f)
+                            (benchmarkMainIs benchmark)
+            $+$ ppFieldsFiltered binfoDefaults binfoFieldDescrs (benchmarkBuildInfo benchmark)
+            $+$ ppCustomFields (customFieldsBI (benchmarkBuildInfo benchmark))
+      where
+        maybeBenchmarkType | benchmarkInterface benchmark == mempty = Nothing
+                           | otherwise = Just (benchmarkType benchmark)
+
+    ppBenchmark (Benchmark _ _ buildInfo' _)
+                    (Just (Benchmark _ _ buildInfo2 _)) =
+            ppDiffFields binfoFieldDescrs buildInfo' buildInfo2
+            $+$ ppCustomFields (customFieldsBI buildInfo')
+
+    benchmarkMainIs benchmark = case benchmarkInterface benchmark of
+      BenchmarkExeV10 _ f -> Just f
       _                   -> Nothing
 
 ppCondition :: Condition ConfVar -> Doc
@@ -216,6 +223,7 @@ ppCondTree ct@(CondNode it deps ifs) mbIt ppIt =
         then ppCondTree ct Nothing ppIt
         else res
   where
+    -- TODO: this ends up printing trailing spaces when combined with nest.
     ppIf (c,thenTree,mElseTree)          =
         ((emptyLine $ text "if" <+> ppCondition c) $$
           nest indentWith (ppCondTree thenTree
@@ -229,10 +237,10 @@ ppCondTree ct@(CondNode it deps ifs) mbIt ppIt =
 ppDeps :: [Dependency] -> Doc
 ppDeps []                                = empty
 ppDeps deps                              =
-    text "build-depends:" <+> fsep (punctuate comma (map disp deps))
+    text "build-depends:" $+$ nest indentWith (vcat (punctuate comma (map disp deps)))
 
 emptyLine :: Doc -> Doc
-emptyLine d                              = text " " $+$ d
+emptyLine d                              = text "" $+$ d
 
 
 
