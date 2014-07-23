@@ -161,6 +161,7 @@ buildLib verbosity pkg_descr lbi lib clbi = do
       language = fromMaybe Haskell98 (defaultLanguage bi)
       conf = withPrograms lbi
       pkgid = packageId pkg_descr
+      ghcDefines = [d | (GHC,ds) <- options (libBuildInfo lib), d@('-':'D':_) <- ds]
 
   runDbProgram verbosity haskellSuiteProgram conf $
     [ "compile", "--build-dir", odir ] ++
@@ -172,7 +173,7 @@ buildLib verbosity pkg_descr lbi lib clbi = do
            | (ipkgid, _) <- componentPackageDeps clbi ] ++
     ["-G", display language] ++
     concat [ ["-X", display ex] | ex <- usedExtensions bi ] ++
-    cppOptions (libBuildInfo lib) ++
+    cppOptions (libBuildInfo lib) ++ ghcDefines ++
     [ display modu | modu <- libModules lib ]
 
 
